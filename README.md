@@ -2,8 +2,6 @@
 
 An AI-powered medical triage assistant that turns chaotic WhatsApp messages into a structured, real-time dashboard for doctors. 
 
-Built for the **HSIL Hackathon (Lyon)**.
-
 ## The Problem
 Doctors increasingly use WhatsApp to communicate with patients. The result? A fragmented mess of voice notes, blurry photos of lab results, and anxious text walls. It creates severe cognitive overload, makes triage nearly impossible, and wastes hours of clinical time.
 
