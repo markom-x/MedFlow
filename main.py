@@ -27,7 +27,8 @@ openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 
 supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_KEY")
+# Backend-only: usa la service role key per bypass RLS sugli insert server-side.
+supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 supabase: Client | None = (
     create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
 )
@@ -217,6 +218,7 @@ def insert_richiesta(
 
     payload = {
         "paziente_id": paziente_id,
+        "medico_id": "0aec5fee-921d-43bf-87b6-c4019182c742",
         "messaggio_originale": messaggio_originale,
         "riassunto_clinico": riassunto_clinico,
         "urgenza": urgenza,
