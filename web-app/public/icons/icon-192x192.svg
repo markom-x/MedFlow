@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="MedExtract">
+  <rect width="192" height="192" rx="28" fill="#ffffff" />
+  <rect x="24" y="24" width="144" height="144" rx="24" fill="#2563eb" />
+  <path d="M96 52c13 0 24 11 24 24v8h8c13 0 24 11 24 24s-11 24-24 24H64c-13 0-24-11-24-24s11-24 24-24h8v-8c0-13 11-24 24-24z" fill="#ffffff"/>
+  <rect x="90" y="70" width="12" height="52" rx="6" fill="#2563eb"/>
+  <rect x="70" y="90" width="52" height="12" rx="6" fill="#2563eb"/>
+</svg>

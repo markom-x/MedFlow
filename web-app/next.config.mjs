@@ -1,16 +1,23 @@
-import type { NextConfig } from "next";
+import withPWAInit from "next-pwa";
 
-const localTurbopackConfig: Pick<NextConfig, "turbopack"> =
+const withPWA = withPWAInit({
+  dest: "public",
+  register: true,
+  skipWaiting: true,
+  disable: process.env.NODE_ENV === "development",
+});
+
+const localTurbopackConfig =
   process.env.VERCEL === "1"
     ? {}
     : {
         turbopack: {
-          // Solo in locale: evita che Turbopack risolva moduli dalla cartella utente.
           root: process.cwd(),
         },
       };
 
-const nextConfig: NextConfig = {
+/** @type {import("next").NextConfig} */
+const nextConfig = {
   ...localTurbopackConfig,
   images: {
     remotePatterns: [
@@ -23,4 +30,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withPWA(nextConfig);
