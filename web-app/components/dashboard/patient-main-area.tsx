@@ -26,8 +26,8 @@ export function PatientMainArea({
 }: Props) {
   return (
     <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">
-      <header className="shrink-0 border-b border-slate-200/90 px-6 py-4">
-        <h1 className="text-xl font-semibold tracking-tight text-slate-900">
+      <header className="shrink-0 border-b border-slate-200/90 px-4 py-3 md:px-6 md:py-4">
+        <h1 className="text-lg font-semibold tracking-tight text-slate-900 md:text-xl">
           {profile.nomeDisplay}
         </h1>
         <p className="mt-1 font-mono text-sm text-slate-500">{profile.telefono}</p>
@@ -37,10 +37,10 @@ export function PatientMainArea({
         defaultValue="fascicolo"
         className="flex min-h-0 w-full flex-1 flex-col gap-0"
       >
-        <div className="shrink-0 border-b border-slate-200 bg-white px-6">
+        <div className="shrink-0 border-b border-slate-200 bg-white px-4 md:px-6">
           <TabsList
             variant="line"
-            className="h-11 w-full justify-start gap-10 rounded-none border-0 bg-transparent p-0"
+            className="h-11 w-full justify-start gap-4 rounded-none border-0 bg-transparent p-0 md:gap-10"
           >
             <TabsTrigger
               value="fascicolo"
@@ -61,8 +61,8 @@ export function PatientMainArea({
           value="fascicolo"
           className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden outline-none data-[state=inactive]:hidden"
         >
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-8">
-            <div className="mx-auto flex max-w-3xl flex-col gap-10">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-8">
+            <div className="mx-auto flex max-w-3xl flex-col gap-6 md:gap-10">
               <PatientPrivateNotes
                 pazienteId={profile.id}
                 initialNote={profile.notePrivate}

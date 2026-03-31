@@ -223,7 +223,7 @@ export function ChatSection({
         className
       )}
     >
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 sm:px-6">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 md:space-y-3 md:px-6">
         {chatRows.map((messaggio) => {
           const raw =
             (messaggio.messaggio_originale ?? "").trim() || "[Messaggio vuoto]";
@@ -319,8 +319,8 @@ export function ChatSection({
       <form
         onSubmit={handleSubmit}
         className={cn(
-          "z-10 shrink-0 border-t border-slate-200 bg-white px-4 py-3 sm:px-6",
-          isCrm ? "mt-auto" : "sticky bottom-0"
+          "sticky bottom-0 z-10 shrink-0 border-t border-slate-200 bg-white px-3 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:px-4 md:px-6",
+          isCrm ? "mt-auto" : ""
         )}
       >
         {attachment ? (
@@ -369,7 +369,7 @@ export function ChatSection({
             placeholder="Scrivi un messaggio al paziente…"
             rows={1}
             className={cn(
-              "max-h-40 min-h-[48px] flex-1 resize-none rounded-lg border border-slate-200 bg-white px-4 py-3 text-lg text-slate-900 shadow-sm",
+              "max-h-40 min-h-[46px] flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-base text-slate-900 shadow-sm md:px-4 md:py-3 md:text-lg",
               "placeholder:text-slate-500",
               "outline-none transition-colors",
               "focus:border-blue-600 focus:ring-2 focus:ring-blue-600/25"

@@ -19,8 +19,8 @@ export function PatientSidebar({
   onSelect,
 }: Props) {
   return (
-    <aside className="flex h-full min-h-0 w-[30%] min-w-[260px] max-w-md shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-200 px-5 py-5">
+    <aside className="flex h-full min-h-0 w-full shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white shadow-sm md:w-80 md:min-w-[18rem]">
+      <div className="border-b border-slate-200 px-4 py-4 md:px-5 md:py-5">
         <h1 className="text-lg font-semibold tracking-tight text-slate-900">
           Pazienti
         </h1>
@@ -28,7 +28,7 @@ export function PatientSidebar({
           In cima: da gestire o urgenza alta. Clicca per aprire il fascicolo.
         </p>
       </div>
-      <nav className="flex-1 overflow-y-auto px-3 py-3">
+      <nav className="flex-1 overflow-y-auto px-2 py-2 md:px-3 md:py-3">
         <ul className="flex flex-col gap-2">
           {orderedIds.map((id) => {
             const bucket = buckets.get(id);

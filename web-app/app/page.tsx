@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 export default function Home() {
   return (
-    <div className="flex h-screen min-h-0 w-full flex-col overflow-hidden bg-slate-50">
+    <div className="flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-slate-50">
       <DashboardApp />
     </div>
   );
