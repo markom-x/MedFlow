@@ -32,16 +32,55 @@ supabase: Client | None = (
     create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
 )
 
+SYSTEM_PROMPT = """
+Sei un infermiere di triage esperto che assiste un Medico di Medicina Generale.
+Il tuo compito è analizzare il messaggio del paziente ed estrarre i dati clinici in un formato JSON rigoroso.
+
+REGOLE DI TRIAGE:
+- ROSSO: Dolore toracico forte, difficoltà respiratoria (dispnea), perdita di coscienza, emorragie, deficit neurologici.
+- GIALLO: Febbre alta (>39) persistente, dolori addominali forti, ferite, sintomi acuti in peggioramento.
+- BIANCO/VERDE: Ricette per farmaci cronici, certificati, sintomi lievi, lettura referti.
+
+DEVI RISPONDERE SOLO ED ESCLUSIVAMENTE CON UN OGGETTO JSON CON QUESTA STRUTTURA:
+{
+  "sintesi_medica": "Riassunto conciso in linguaggio clinico (max 20 parole)",
+  "sintomi_chiave": ["sintomo1", "sintomo2"],
+  "farmaci_citati": ["farmaco1"],
+  "red_flags": ["segnali di allarme"],
+  "is_richiesta_ricetta": true/false,
+  "livello_urgenza": "ROSSO" | "GIALLO" | "VERDE"
+}
+"""
+
+
+def _safe_list_of_strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if item is None:
+            continue
+        s = str(item).strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _default_triage_output() -> dict:
+    return {
+        "sintesi_medica": None,
+        "sintomi_chiave": [],
+        "farmaci_citati": [],
+        "red_flags": [],
+        "is_richiesta_ricetta": False,
+        "livello_urgenza": "GIALLO",
+    }
+
 
 def extract_fields_with_openai(message: str, from_number: str) -> dict:
     """
-    Chiama GPT per estrarre:
-      - Paziente (nome se presente, altrimenti usa from_number)
-      - Richiesta (es. "Ricetta <farmaco>")
-      - Urgenza (Bassa/Media/Alta)
-
-    Ritorna SEMPRE un oggetto con chiavi:
-      - Paziente, Richiesta, Urgenza
+    Estrae JSON strutturato di triage clinico dal messaggio paziente.
+    Ritorna sempre lo schema richiesto con fallback sicuro (urgenza GIALLO).
     """
     is_placeholder_key = bool(openai_api_key) and (
         "INSERISCI" in openai_api_key.upper() or "HERE" in openai_api_key.upper()
@@ -49,32 +88,19 @@ def extract_fields_with_openai(message: str, from_number: str) -> dict:
 
     if not openai_client or is_placeholder_key:
         print("ERRORE: OPENAI_API_KEY mancante. Nessuna estrazione eseguita.")
-        return {"Paziente": None, "Richiesta": None, "Urgenza": None}
+        return _default_triage_output()
 
     if not message or not message.strip():
-        return {"Paziente": None, "Richiesta": None, "Urgenza": None}
-
-    system_prompt = (
-        "Sei un estrattore di informazioni da messaggi WhatsApp. "
-        "Estrai e restituisci SOLO un oggetto JSON VALIDO con chiavi esattamente: "
-        "\"Paziente\", \"Richiesta\", \"Urgenza\". "
-        "Paziente: stringa con il nome del paziente se presente nel messaggio; "
-        "se non presente, usa ESATTAMENTE il valore del campo 'From' passato dal backend. "
-        "Richiesta: stringa breve per la richiesta medica (es. \"Ricetta Eutirox\") "
-        "utilizzando il nome farmaco e, se utile, il sintomo. "
-        "Urgenza: una delle seguenti stringhe esattamente: \"Bassa\", \"Media\", \"Alta\". "
-        "Se non puoi determinare l'urgenza, usa \"Media\". "
-        "Non includere alcun testo fuori dal JSON."
-    )
+        return _default_triage_output()
 
     try:
         resp = openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0,
+            temperature=0.1,
             response_format={"type": "json_object"},
             timeout=15,
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": f"From: {from_number}\nMessaggio: {message}",
@@ -88,18 +114,29 @@ def extract_fields_with_openai(message: str, from_number: str) -> dict:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        parsed = {"Paziente": from_number, "Richiesta": None, "Urgenza": None}
+        print("ERRORE parsing JSON OpenAI: fallback default GIALLO.")
+        return _default_triage_output()
 
-    paziente = parsed.get("Paziente") or from_number
-    richiesta = parsed.get("Richiesta")
-    urgenza = parsed.get("Urgenza")
+    default_output = _default_triage_output()
+    sintesi = parsed.get("sintesi_medica")
+    if sintesi is not None:
+        sintesi = str(sintesi).strip() or None
 
-    if isinstance(urgenza, str):
-        urgenza = urgenza.strip().capitalize()
-    if urgenza not in {"Bassa", "Media", "Alta"}:
-        urgenza = "Media"
+    livello_urgenza = str(parsed.get("livello_urgenza") or "").strip().upper()
+    if livello_urgenza not in {"ROSSO", "GIALLO", "VERDE"}:
+        livello_urgenza = "GIALLO"
 
-    return {"Paziente": paziente, "Richiesta": richiesta, "Urgenza": urgenza}
+    return {
+        "sintesi_medica": sintesi,
+        "sintomi_chiave": _safe_list_of_strings(parsed.get("sintomi_chiave")),
+        "farmaci_citati": _safe_list_of_strings(parsed.get("farmaci_citati")),
+        "red_flags": _safe_list_of_strings(parsed.get("red_flags")),
+        "is_richiesta_ricetta": bool(parsed.get("is_richiesta_ricetta")),
+        "livello_urgenza": livello_urgenza,
+        # Compatibilità interna: valori pronti per colonne DB esistenti.
+        "riassunto_clinico": sintesi or default_output["sintesi_medica"],
+        "urgenza_db": livello_urgenza,
+    }
 
 
 def super_riassunto_vocale(transcript: str, from_number: str) -> str:
@@ -466,8 +503,8 @@ def process_message(
         insert_richiesta(
             paziente_id=paziente_id,
             messaggio_originale=message_text,
-            riassunto_clinico=extracted.get("Richiesta"),
-            urgenza=extracted.get("Urgenza"),
+            riassunto_clinico=extracted.get("riassunto_clinico"),
+            urgenza=extracted.get("urgenza_db"),
             url_media=uploaded_media_url,
         )
     except Exception as e:
