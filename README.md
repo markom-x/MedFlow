@@ -1,4 +1,4 @@
-# MedExtract 🩺
+# MedFlow ⚡
 
 An AI-powered medical triage assistant that turns chaotic WhatsApp messages into a structured, real-time dashboard for doctors. 
 
@@ -6,7 +6,7 @@ An AI-powered medical triage assistant that turns chaotic WhatsApp messages into
 Doctors increasingly use WhatsApp to communicate with patients. The result? A fragmented mess of voice notes, blurry photos of lab results, and anxious text walls. It creates severe cognitive overload, makes triage nearly impossible, and wastes hours of clinical time.
 
 ## What it does
-MedExtract intercepts patient messages via a WhatsApp bot and processes them instantly:
+MedFlow intercepts patient messages via a WhatsApp bot and processes them instantly:
 - **Multimodal ingestion:** Handles text, audio (auto-transcribed), and images/PDFs (medical reports).
 - **AI Triage:** Uses GPT-4o to extract key symptoms, current medications, and automatically assigns a clinical urgency level.
 - **Real-time Dashboard:** Drops the processed ticket onto the doctor's screen instantly without requiring a page refresh.
