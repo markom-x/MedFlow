@@ -14,7 +14,7 @@ import {
   type PatientBucket,
 } from "@/lib/dashboard/aggregate";
 import { fetchRichieste } from "@/lib/dashboard/data";
-import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { getSupabaseAuthBrowserClient } from "@/lib/supabase/auth-browser";
 import { safeStorageFileName } from "@/lib/upload/safe-storage-name";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +31,7 @@ export function DashboardApp() {
     setError(null);
     setLoading(true);
     try {
-      const supabase = getSupabaseBrowserClient();
+      const supabase = getSupabaseAuthBrowserClient();
       const rows = await fetchRichieste(supabase);
       const map = groupRichiesteByPatient(rows);
       const ids = sortPatientIds(map);
@@ -69,7 +69,7 @@ export function DashboardApp() {
 
     setSending(true);
     try {
-      const supabase = getSupabaseBrowserClient();
+      const supabase = getSupabaseAuthBrowserClient();
       let urlPubblico: string | null = null;
 
       if (file) {

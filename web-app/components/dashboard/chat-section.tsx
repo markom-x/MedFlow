@@ -11,7 +11,7 @@ import {
 } from "@/lib/dashboard/message-text";
 import { urlLooksLikeAudio, urlLooksLikePdf } from "@/lib/dashboard/media";
 import type { RichiestaRow } from "@/lib/dashboard/types";
-import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { getSupabaseAuthBrowserClient } from "@/lib/supabase/auth-browser";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -122,7 +122,7 @@ export function ChatSection({
   }, [pazienteId, requestsSignature]);
 
   useEffect(() => {
-    const supabase = getSupabaseBrowserClient();
+    const supabase = getSupabaseAuthBrowserClient();
 
     const channel = supabase.channel("custom-insert-channel");
 
