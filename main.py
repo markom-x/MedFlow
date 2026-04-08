@@ -87,6 +87,7 @@ def _log_startup_config() -> None:
         )
 
 SYSTEM_PROMPT = """
+You are a clinical data extractor and a strict privacy filter. You must completely ignore and discard any Personally Identifiable Information (PII) such as names, surnames, locations, or phone numbers that the user might mention in the text. Your output must contain ONLY the structured clinical JSON, stripped of any identity.
 Sei un infermiere di triage esperto che assiste un Medico di Medicina Generale.
 Il tuo compito è analizzare il messaggio del paziente ed estrarre i dati clinici in un formato JSON rigoroso.
 
@@ -157,7 +158,7 @@ def extract_fields_with_openai(message: str, from_number: str) -> dict:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": f"From: {from_number}\nMessaggio: {message}",
+                    "content": f"Messaggio: {message}",
                 },
             ],
         )
@@ -224,7 +225,7 @@ def super_riassunto_vocale(transcript: str, from_number: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": f"From: {from_number}\n\nTrascrizione del vocale:\n{transcript}",
+                    "content": f"Trascrizione del vocale:\n{transcript}",
                 },
             ],
         )
