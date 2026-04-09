@@ -337,8 +337,6 @@ def _create_paziente_for_medico(phone: str, medico_id: str) -> tuple[str | None,
             created = (
                 supabase.table("pazienti")
                 .insert(payload)
-                .select("id, medico_id")
-                .single()
                 .execute()
             )
         except Exception as e:
@@ -353,12 +351,10 @@ def _create_paziente_for_medico(phone: str, medico_id: str) -> tuple[str | None,
             created = (
                 supabase.table("pazienti")
                 .insert(payload_with_default_name)
-                .select("id, medico_id")
-                .single()
                 .execute()
             )
 
-        row = created.data or {}
+        row = created.data[0] if getattr(created, "data", None) else {}
         pid = row.get("id")
         mid = row.get("medico_id")
         if pid and mid:
