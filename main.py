@@ -292,12 +292,22 @@ def _extract_activation_medico_id(text: str) -> str | None:
     Estrae il codice da messaggi tipo:
     'Attivazione <uuid-medico>'
     """
+    incoming = (text or "").strip()
     m = re.match(
-        r"^\s*Attivazione\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})\s*$",
-        text or "",
+        r"^attivazione\s+([0-9a-fA-F-]{32,40})",
+        incoming,
         flags=re.IGNORECASE,
     )
     return m.group(1) if m else None
+
+
+def _is_valid_uuid(value: str) -> bool:
+    return bool(
+        re.match(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            value or "",
+        )
+    )
 
 
 def _medico_exists(medico_id: str) -> bool:
@@ -322,13 +332,32 @@ def _create_paziente_for_medico(phone: str, medico_id: str) -> tuple[str | None,
     if not supabase:
         return None, None
     try:
-        created = (
-            supabase.table("pazienti")
-            .insert({"telefono": phone, "medico_id": medico_id})
-            .select("id, medico_id")
-            .single()
-            .execute()
-        )
+        payload = {"telefono": phone, "medico_id": medico_id}
+        try:
+            created = (
+                supabase.table("pazienti")
+                .insert(payload)
+                .select("id, medico_id")
+                .single()
+                .execute()
+            )
+        except Exception as e:
+            # Se esistono colonne obbligatorie extra (es. nome), usiamo un default sicuro.
+            print(f"ERRORE onboarding paziente (insert base): {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            payload_with_default_name = {
+                "telefono": phone,
+                "medico_id": medico_id,
+                "nome": "Paziente WhatsApp",
+            }
+            created = (
+                supabase.table("pazienti")
+                .insert(payload_with_default_name)
+                .select("id, medico_id")
+                .single()
+                .execute()
+            )
+
         row = created.data or {}
         pid = row.get("id")
         mid = row.get("medico_id")
@@ -336,7 +365,7 @@ def _create_paziente_for_medico(phone: str, medico_id: str) -> tuple[str | None,
             print(f"[ONBOARDING] Paziente creato: id={pid}, medico_id={mid}", flush=True)
             return str(pid), str(mid)
     except Exception as e:
-        print(f"ERRORE onboarding paziente: {e}", flush=True)
+        print(f"ERRORE onboarding paziente: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
     return None, None
 
@@ -802,16 +831,40 @@ def twilio_webhook(
         return Response(content=twiml, media_type="application/xml")
 
     # Onboarding zero-touch per numeri sconosciuti.
-    activation_medico_id = _extract_activation_medico_id(Body or "")
-    if activation_medico_id and _medico_exists(activation_medico_id):
+    incoming_text = (Body or "").strip()
+    if incoming_text.lower().startswith("attivazione"):
+        activation_medico_id = _extract_activation_medico_id(incoming_text)
+        if not activation_medico_id or not _is_valid_uuid(activation_medico_id):
+            print(
+                f"ERRORE attivazione: UUID mancante/non valido nel testo: {incoming_text!r}",
+                flush=True,
+            )
+            _send_whatsapp_reply(
+                from_phone,
+                "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
+            )
+            twiml = "<Response></Response>"
+            return Response(content=twiml, media_type="application/xml")
+
+        if not _medico_exists(activation_medico_id):
+            print(
+                f"ERRORE attivazione: medico_id non trovato in tabella medici: {activation_medico_id}",
+                flush=True,
+            )
+            _send_whatsapp_reply(
+                from_phone,
+                "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
+            )
+            twiml = "<Response></Response>"
+            return Response(content=twiml, media_type="application/xml")
+
         created_pid, created_mid = _create_paziente_for_medico(
             from_phone, activation_medico_id
         )
         if created_pid and created_mid:
             _send_whatsapp_reply(
                 from_phone,
-                "Benvenuto! Il tuo profilo e' stato collegato con successo al tuo medico. "
-                "Puoi iniziare a inviare le tue richieste.",
+                "Benvenuto! Il tuo profilo e' stato collegato con successo al tuo medico.",
             )
             print(
                 "[ONBOARDING] Attivazione completata. Messaggio corrente non processato come richiesta clinica.",
@@ -823,6 +876,10 @@ def twilio_webhook(
         print(
             "ERRORE: onboarding richiesto ma creazione paziente non riuscita.",
             flush=True,
+        )
+        _send_whatsapp_reply(
+            from_phone,
+            "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
         )
         twiml = "<Response></Response>"
         return Response(content=twiml, media_type="application/xml")
