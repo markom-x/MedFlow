@@ -22,6 +22,12 @@ app = FastAPI(
     description="MVP webhook per messaggi Twilio (Sandbox WhatsApp).",
 )
 
+
+@app.api_route("/", methods=["GET", "HEAD"])
+def healthcheck_root() -> dict[str, str]:
+    return {"status": "ok", "service": "MedFlow API"}
+
+
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=BASE_DIR / ".env")
 
