@@ -8,6 +8,7 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote
 
 import requests
@@ -49,6 +50,9 @@ supabase: Client | None = (
     if supabase_url and supabase_service_role_key
     else None
 )
+
+# Twilio Content Template (GDPR) — variabili vuote come richiesto dall'API.
+GDPR_CONSENT_WHATSAPP_TEMPLATE_SID = "HXcac55c6a25f18c112a523850f8f59ca7"
 
 
 def _jwt_role_hint(key: str | None) -> str:
@@ -401,12 +405,16 @@ def _create_paziente_for_medico(phone: str, medico_id: str) -> tuple[str | None,
     return None, None
 
 
-def get_or_create_paziente_with_consent(
+def fetch_paziente_if_exists(
     from_number: str,
-) -> tuple[str | None, str | None, bool]:
+) -> tuple[str, str | None, bool] | None | Literal["error"]:
+    """
+    Solo SELECT: nessun insert. Ritorna la riga se esiste, None se non c'è paziente,
+    \"error\" se la query fallisce (da non confondere con \"non collegato\").
+    """
     if not supabase:
         print("ERRORE: Supabase non configurato (SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY).", flush=True)
-        return None, None, False
+        return "error"
 
     try:
         existing = (
@@ -416,34 +424,19 @@ def get_or_create_paziente_with_consent(
             .limit(1)
             .execute()
         )
-        if existing.data:
-            row = existing.data[0]
-            pid = row.get("id")
-            medico_id = row.get("medico_id")
-            gdpr_consent = bool(row.get("gdpr_consent"))
-            return str(pid), (str(medico_id) if medico_id else None), gdpr_consent
-
-        payload = {"telefono": from_number, "gdpr_consent": False}
-        try:
-            created = supabase.table("pazienti").insert(payload).execute()
-        except Exception:
-            payload_with_default_name = {
-                "telefono": from_number,
-                "nome": "Paziente WhatsApp",
-                "gdpr_consent": False,
-            }
-            created = supabase.table("pazienti").insert(payload_with_default_name).execute()
-
-        if created.data:
-            row = created.data[0]
-            pid = row.get("id")
-            medico_id = row.get("medico_id")
-            print(f"[GDPR] Nuovo paziente creato per consenso: id={pid}", flush=True)
-            return str(pid), (str(medico_id) if medico_id else None), False
+        if not existing.data:
+            return None
+        row = existing.data[0]
+        pid = row.get("id")
+        if not pid:
+            return None
+        medico_id = row.get("medico_id")
+        gdpr_consent = bool(row.get("gdpr_consent"))
+        return str(pid), (str(medico_id) if medico_id else None), gdpr_consent
     except Exception as e:
-        print(f"ERRORE: get_or_create_paziente_with_consent: {type(e).__name__}: {e}", flush=True)
+        print(f"ERRORE: fetch_paziente_if_exists: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
-    return None, None, False
+        return "error"
 
 
 def set_paziente_gdpr_consent(paziente_id: str, consent_value: bool) -> bool:
@@ -965,8 +958,17 @@ def twilio_webhook(
 
     from_phone = _normalize_phone(From)
     incoming_text = (Body or "").strip()
+    twiml = "<Response></Response>"
 
-    # 1) Activation check: collega prima il paziente al medico.
+    if not supabase:
+        _send_whatsapp_reply(
+            from_phone,
+            "Errore temporaneo. Riprova tra poco o contatta il tuo medico.",
+        )
+        return Response(content=twiml, media_type="application/xml")
+
+    # --- 1) Activation command ---
+    # Testo che inizia con "attivazione" (case insensitive): estrai UUID medico, collega/crea paziente.
     if incoming_text.lower().startswith("attivazione"):
         activation_medico_id = _extract_activation_medico_id(incoming_text)
         if not activation_medico_id or not _is_valid_uuid(activation_medico_id):
@@ -978,7 +980,6 @@ def twilio_webhook(
                 from_phone,
                 "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
             )
-            twiml = "<Response></Response>"
             return Response(content=twiml, media_type="application/xml")
 
         if not _medico_exists(activation_medico_id):
@@ -990,7 +991,6 @@ def twilio_webhook(
                 from_phone,
                 "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
             )
-            twiml = "<Response></Response>"
             return Response(content=twiml, media_type="application/xml")
 
         linked_pid, linked_mid, linked_consent = link_paziente_to_medico(
@@ -1005,47 +1005,41 @@ def twilio_webhook(
                 from_phone,
                 "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
             )
-            twiml = "<Response></Response>"
             return Response(content=twiml, media_type="application/xml")
 
         if not linked_consent:
             _send_whatsapp_template(
                 to_number=from_phone,
-                content_sid="HXa9cb1f2bbffe1e2a078daf05ad19a956",
+                content_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
             )
             print(
-                "[GDPR] Consenso mancante dopo attivazione: template inviato.",
+                "[GDPR] Dopo attivazione: consenso mancante, template GDPR inviato e stop.",
                 flush=True,
             )
-            twiml = "<Response></Response>"
             return Response(content=twiml, media_type="application/xml")
 
-        _send_whatsapp_reply(
-            from_phone,
-            "Attivazione completata",
-        )
-        twiml = "<Response></Response>"
+        _send_whatsapp_reply(from_phone, "Attivazione completata")
         return Response(content=twiml, media_type="application/xml")
 
-    # 2) Patient existence/link check (messaggio non di attivazione).
-    paziente_id, medico_id, gdpr_consent = get_or_create_paziente_with_consent(from_phone)
-    if not paziente_id:
+    # --- 2) Not linked yet (nessun comando di attivazione) ---
+    patient_row = fetch_paziente_if_exists(from_phone)
+    if patient_row == "error":
         _send_whatsapp_reply(
             from_phone,
             "Errore temporaneo. Riprova tra poco o contatta il tuo medico.",
         )
-        twiml = "<Response></Response>"
         return Response(content=twiml, media_type="application/xml")
 
-    if not medico_id:
+    if patient_row is None or not patient_row[1]:
         _send_whatsapp_reply(
             from_phone,
             "Benvenuto in MedFlow! Per iniziare, inviami il codice di attivazione che ti ha fornito il tuo medico.",
         )
-        twiml = "<Response></Response>"
         return Response(content=twiml, media_type="application/xml")
 
-    # 3) GDPR check.
+    paziente_id, medico_id, gdpr_consent = patient_row
+
+    # --- 3) Pending GDPR (collegato ma consenso assente) ---
     if not gdpr_consent:
         if incoming_text.lower() == "accetto":
             updated = set_paziente_gdpr_consent(paziente_id, True)
@@ -1059,21 +1053,19 @@ def twilio_webhook(
                     from_phone,
                     "Errore durante la registrazione del consenso. Riprova.",
                 )
-            twiml = "<Response></Response>"
             return Response(content=twiml, media_type="application/xml")
 
         _send_whatsapp_template(
             to_number=from_phone,
-            content_sid="HXa9cb1f2bbffe1e2a078daf05ad19a956",
+            content_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
         )
         print(
-            "[GDPR] Consenso mancante: template inviato e messaggio non processato.",
+            "[GDPR] Consenso mancante: template reinviato, messaggio non processato.",
             flush=True,
         )
-        twiml = "<Response></Response>"
         return Response(content=twiml, media_type="application/xml")
 
-    # 4) Normal flow.
+    # --- 4) Normal flow (AI / media) ---
     process_message(
         from_phone,
         Body,
@@ -1083,6 +1075,5 @@ def twilio_webhook(
         MessageSid,
     )
     print("[webhook] Risposta TwiML 200 (routing standard completato).", flush=True)
-    twiml = "<Response></Response>"
     return Response(content=twiml, media_type="application/xml")
 
