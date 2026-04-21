@@ -19,6 +19,9 @@ from openai import OpenAI
 from supabase import Client, create_client
 from twilio.rest import Client as TwilioClient
 
+load_dotenv()
+print(f'DEBUG ENV: {os.getenv("SUPABASE_URL")}')
+
 app = FastAPI(
     title="WhatsApp Twilio Webhook",
     description="MVP webhook per messaggi Twilio (Sandbox WhatsApp).",
@@ -29,9 +32,6 @@ app = FastAPI(
 def healthcheck_root() -> dict[str, str]:
     return {"status": "ok", "service": "MedFlow API"}
 
-
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(dotenv_path=BASE_DIR / ".env")
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_client = OpenAI(api_key=openai_api_key) if openai_api_key else None
