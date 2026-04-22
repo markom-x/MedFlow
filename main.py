@@ -294,19 +294,19 @@ def _send_whatsapp_reply(to_number: str, text: str) -> None:
 
 def _send_whatsapp_template(to_number: str, template_sid: str):
     try:
-        from_number = os.getenv("TWILIO_PHONE_NUMBER", "whatsapp:+447863789592")
+        from_number = os.getenv("TWILIO_PHONE_NUMBER", "+447863789592")
         client = TwilioClient(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
 
         if not from_number.startswith("whatsapp:"):
             from_number = f"whatsapp:{from_number}"
         if not to_number.startswith("whatsapp:"):
             to_number = f"whatsapp:{to_number}"
-        
-        # Invia il template SENZA il parametro content_variables
+
         message = client.messages.create(
             from_=from_number,
             to=to_number,
-            content_sid=template_sid
+            content_sid=template_sid,
+            content_variables="{}",
         )
         print(f"TWILIO TEMPLATE OK: SID {message.sid}", flush=True)
     except Exception as e:
