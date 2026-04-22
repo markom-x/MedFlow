@@ -348,7 +348,7 @@ def _update_paziente_name_if_allowed(
 
 def extract_patient_name_with_openai(message: str) -> str | None:
     """
-    Se l'utente si presenta nel messaggio, estrae il nome; altrimenti ritorna None.
+    Se l'utente si presenta nel messaggio, estrae nome e cognome completi; altrimenti ritorna None.
     """
     is_placeholder_key = bool(openai_api_key) and (
         "INSERISCI" in openai_api_key.upper() or "HERE" in openai_api_key.upper()
@@ -369,16 +369,16 @@ def extract_patient_name_with_openai(message: str) -> str | None:
                 {
                     "role": "system",
                     "content": (
-                        "Estrai solo il nome proprio con cui l'utente si presenta nel messaggio. "
-                        "Se non si presenta, restituisci null. "
+                        "Estrai nome e cognome completi se presenti. Restituisci una stringa con Nome e Cognome capitalizzati correttamente. "
+                        "Se l'utente non si presenta, restituisci null. "
                         "Rispondi solo con JSON valido nel formato: "
-                        '{"nome": "Mario"} oppure {"nome": null}.'
+                        '{"nome": "Mario Rossi"} oppure {"nome": null}.'
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        "Se l'utente si è presentato dicendo il suo nome, estrailo. "
+                        "Se l'utente si è presentato, estrai nome e cognome completi se presenti. "
                         "Altrimenti rispondi null.\n\n"
                         f"Messaggio: {message}"
                     ),
@@ -387,7 +387,8 @@ def extract_patient_name_with_openai(message: str) -> str | None:
         )
         content = resp.choices[0].message.content or "{}"
         parsed = json.loads(content)
-        return _normalize_person_name(parsed.get("nome"))
+        extracted_name = _normalize_person_name(parsed.get("nome"))
+        return extracted_name
     except Exception as e:
         print(f"ERRORE estrazione nome con OpenAI: {e}", flush=True)
         return None
@@ -1044,11 +1045,11 @@ def _process_message_impl(
                     print(f"ERRORE upload media referti: {e}")
 
     print("[OpenAI] Inizio estrazione triage (GPT)…", flush=True)
-    extracted_patient_name = extract_patient_name_with_openai(message_text)
-    if extracted_patient_name:
+    extracted_name = extract_patient_name_with_openai(message_text)
+    if extracted_name:
         _update_paziente_name_if_allowed(
             paziente_id=paziente_id,
-            new_name=extracted_patient_name,
+            new_name=extracted_name,
             profile_name_guess=profile_name,
             only_if_current_null=False,
         )

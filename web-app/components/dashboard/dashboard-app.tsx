@@ -123,7 +123,7 @@ export function DashboardApp() {
     }
   }
 
-  async function handleRenamePatient(patientId: string, newName: string): Promise<void> {
+  async function updatePatientName(patientId: string, newName: string): Promise<void> {
     const previousBuckets = buckets;
     const previousOrderedIds = orderedIds;
 
@@ -250,7 +250,7 @@ export function DashboardApp() {
             buckets={buckets}
             selectedId={selectedId}
             onSelect={handleSelectPatient}
-            onRenamePatient={handleRenamePatient}
+            updatePatientName={updatePatientName}
           />
         </div>
       </div>

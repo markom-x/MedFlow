@@ -1,5 +1,6 @@
 "use client";
 
+import { Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PatientBucket } from "@/lib/dashboard/aggregate";
 import { lastMessagePreview } from "@/lib/dashboard/aggregate";
@@ -11,7 +12,7 @@ type Props = {
   buckets: Map<string, PatientBucket>;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onRenamePatient: (id: string, newName: string) => Promise<void>;
+  updatePatientName: (patientId: string, newName: string) => Promise<void>;
 };
 
 export function PatientSidebar({
@@ -19,7 +20,7 @@ export function PatientSidebar({
   buckets,
   selectedId,
   onSelect,
-  onRenamePatient,
+  updatePatientName,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
@@ -32,7 +33,7 @@ export function PatientSidebar({
   async function commitEdit(id: string) {
     const nextName = draftName.trim();
     setEditingId(null);
-    await onRenamePatient(id, nextName);
+    await updatePatientName(id, nextName);
   }
 
   return (
@@ -98,16 +99,17 @@ export function PatientSidebar({
                           aria-label="Modifica nome paziente"
                         />
                       ) : (
-                        <p
-                          className="truncate font-semibold text-slate-900"
+                        <span
+                          className="inline-flex max-w-full items-center gap-1.5 truncate font-semibold text-slate-900"
                           title="Clicca per modificare il nome"
                           onClick={(event) => {
                             event.stopPropagation();
                             startEditing(id, profile.nomeRaw);
                           }}
                         >
-                          {profile.nomeDisplay}
-                        </p>
+                          <span className="truncate">{profile.nomeDisplay}</span>
+                          <Pencil className="size-3.5 shrink-0 text-slate-500" />
+                        </span>
                       )}
                       <p className="mt-1 line-clamp-2 text-sm leading-snug text-slate-600">
                         {preview}
