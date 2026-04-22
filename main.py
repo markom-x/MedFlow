@@ -292,36 +292,27 @@ def _send_whatsapp_reply(to_number: str, text: str) -> None:
         traceback.print_exc()
 
 
-def _send_whatsapp_template(to_number: str, content_sid: str) -> None:
-    """
-    Invia un template WhatsApp approvato (Twilio Content Template).
-    """
-    sid = os.getenv("TWILIO_ACCOUNT_SID")
-    token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_number = os.getenv("TWILIO_PHONE_NUMBER")
-    if not sid or not token or not from_number:
-        print(
-            "ERRORE: impossibile inviare template WhatsApp (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_PHONE_NUMBER mancanti).",
-            flush=True,
-        )
-        return
-
+def _send_whatsapp_template(to_number: str, template_sid: str):
     try:
-        client = TwilioClient(sid, token)
-        sender = _whatsapp_address(to_number)
-        template_sid = content_sid or "INSERISCI_QUI_IL_TUO_HX_SID"
+        from_number = os.getenv("TWILIO_PHONE_NUMBER", "whatsapp:+447863789592")
+        client = TwilioClient(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+
+        if not from_number.startswith("whatsapp:"):
+            from_number = f"whatsapp:{from_number}"
+        if not to_number.startswith("whatsapp:"):
+            to_number = f"whatsapp:{to_number}"
+        
+        # Invia il template SENZA il parametro content_variables
         message = client.messages.create(
-            content_sid=template_sid,
-            from_=_whatsapp_address(from_number),  # es. whatsapp:+447863789592
-            to=sender,
+            from_=from_number,
+            to=to_number,
+            content_sid=template_sid
         )
-        print(
-            f"TWILIO TEMPLATE OK: template GDPR inviato al paziente. sid={message.sid}",
-            flush=True,
-        )
+        print(f"TWILIO TEMPLATE OK: SID {message.sid}", flush=True)
     except Exception as e:
-        print(f"ERRORE invio WhatsApp template Twilio: {e}", flush=True)
+        print("ERRORE invio WhatsApp template Twilio: ")
         traceback.print_exc()
+        raise e
 
 
 def _extract_activation_medico_id(text: str) -> str | None:
@@ -1009,7 +1000,7 @@ def twilio_webhook(
         if not linked_consent:
             _send_whatsapp_template(
                 to_number=from_phone,
-                content_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
+                template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID
             )
             print(
                 "[GDPR] Dopo attivazione: consenso mancante, template GDPR inviato e stop.",
@@ -1056,7 +1047,7 @@ def twilio_webhook(
 
         _send_whatsapp_template(
             to_number=from_phone,
-            content_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
+            template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID
         )
         print(
             "[GDPR] Consenso mancante: template reinviato, messaggio non processato.",
