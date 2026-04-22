@@ -251,6 +251,148 @@ def _normalize_phone(phone: str | None) -> str:
     return value
 
 
+def _normalize_person_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    cleaned = re.sub(r"\s+", " ", str(name)).strip()
+    return cleaned or None
+
+
+def _is_generic_paziente_name(
+    current_name: str | None,
+    profile_name_guess: str | None = None,
+) -> bool:
+    normalized_current = (_normalize_person_name(current_name) or "").casefold()
+    if not normalized_current:
+        return True
+
+    generic_values = {
+        "paziente",
+        "paziente whatsapp",
+        "utente whatsapp",
+        "utente",
+        "whatsapp user",
+    }
+    if normalized_current in generic_values:
+        return True
+
+    normalized_profile = (_normalize_person_name(profile_name_guess) or "").casefold()
+    if normalized_profile and normalized_current == normalized_profile:
+        return True
+
+    return False
+
+
+def _can_auto_update_paziente_name(
+    current_name: str | None,
+    profile_name_guess: str | None = None,
+) -> bool:
+    # Evita overwrite dei nomi presumibilmente inseriti/manuali del medico.
+    return _is_generic_paziente_name(current_name, profile_name_guess)
+
+
+def _update_paziente_name_if_allowed(
+    paziente_id: str,
+    new_name: str | None,
+    profile_name_guess: str | None = None,
+    only_if_current_null: bool = False,
+) -> bool:
+    if not supabase:
+        return False
+
+    normalized_new_name = _normalize_person_name(new_name)
+    if not normalized_new_name:
+        return False
+
+    try:
+        current = (
+            supabase.table("pazienti")
+            .select("id, nome")
+            .eq("id", paziente_id)
+            .limit(1)
+            .execute()
+        )
+        if not current.data:
+            return False
+
+        current_name = current.data[0].get("nome")
+        normalized_current = _normalize_person_name(current_name)
+
+        if only_if_current_null and normalized_current:
+            return False
+        if not only_if_current_null and not _can_auto_update_paziente_name(
+            normalized_current, profile_name_guess
+        ):
+            return False
+        if normalized_current and normalized_current.casefold() == normalized_new_name.casefold():
+            return False
+
+        updated = (
+            supabase.table("pazienti")
+            .update({"nome": normalized_new_name})
+            .eq("id", paziente_id)
+            .execute()
+        )
+        ok = bool(getattr(updated, "data", None))
+        if ok:
+            print(
+                f"[DB] Nome paziente aggiornato automaticamente (id={paziente_id}, nome={normalized_new_name!r}).",
+                flush=True,
+            )
+        return ok
+    except Exception as e:
+        print(f"ERRORE update nome paziente={paziente_id}: {e}", flush=True)
+        traceback.print_exc()
+        return False
+
+
+def extract_patient_name_with_openai(message: str) -> str | None:
+    """
+    Se l'utente si presenta nel messaggio, estrae il nome; altrimenti ritorna None.
+    """
+    is_placeholder_key = bool(openai_api_key) and (
+        "INSERISCI" in openai_api_key.upper() or "HERE" in openai_api_key.upper()
+    )
+    if not openai_client or is_placeholder_key:
+        return None
+
+    if not message or not message.strip():
+        return None
+
+    try:
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            response_format={"type": "json_object"},
+            timeout=10,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Estrai solo il nome proprio con cui l'utente si presenta nel messaggio. "
+                        "Se non si presenta, restituisci null. "
+                        "Rispondi solo con JSON valido nel formato: "
+                        '{"nome": "Mario"} oppure {"nome": null}.'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Se l'utente si è presentato dicendo il suo nome, estrailo. "
+                        "Altrimenti rispondi null.\n\n"
+                        f"Messaggio: {message}"
+                    ),
+                },
+            ],
+        )
+        content = resp.choices[0].message.content or "{}"
+        parsed = json.loads(content)
+        return _normalize_person_name(parsed.get("nome"))
+    except Exception as e:
+        print(f"ERRORE estrazione nome con OpenAI: {e}", flush=True)
+        return None
+
+
 def _whatsapp_address(phone: str) -> str:
     p = phone.strip()
     if p.lower().startswith("whatsapp:"):
@@ -500,16 +642,16 @@ def link_paziente_to_medico(
     return None, None, False
 
 
-def get_paziente_by_phone(from_number: str) -> tuple[str | None, str | None]:
+def get_paziente_by_phone(from_number: str) -> tuple[str | None, str | None, str | None]:
     if not supabase:
         print("ERRORE: Supabase non configurato (SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY).", flush=True)
-        return None, None
+        return None, None, None
 
     try:
         print("[DB] Ricerca paziente per telefono…", flush=True)
         existing = (
             supabase.table("pazienti")
-            .select("id, medico_id, gdpr_consent")
+            .select("id, medico_id, gdpr_consent, nome")
             .eq("telefono", from_number)
             .limit(1)
             .execute()
@@ -517,18 +659,19 @@ def get_paziente_by_phone(from_number: str) -> tuple[str | None, str | None]:
         if existing.data:
             pid = existing.data[0]["id"]
             medico_id = existing.data[0].get("medico_id")
+            nome = existing.data[0].get("nome")
             print(f"[DB] Paziente esistente id={pid}", flush=True)
-            return str(pid), (str(medico_id) if medico_id else None)
+            return str(pid), (str(medico_id) if medico_id else None), _normalize_person_name(nome)
 
         print(
             f"WARNING: numero sconosciuto {from_number}. Nessun paziente trovato, salto inserimento richieste.",
             flush=True,
         )
-        return None, None
+        return None, None, None
     except Exception as e:
         print(f"ERRORE: Supabase get_paziente_by_phone: {e}", flush=True)
         traceback.print_exc()
-        return None, None
+        return None, None, None
 
 
 def insert_richiesta(
@@ -794,6 +937,7 @@ def process_message(
     media_url_0: str = "",
     media_content_type_0: str = "",
     message_sid: str = "",
+    profile_name: str = "",
 ) -> None:
     """
     Elaborazione sincrona (no BackgroundTasks): su Render i task in background
@@ -808,6 +952,7 @@ def process_message(
             media_url_0,
             media_content_type_0,
             message_sid,
+            profile_name,
         )
         print("[process_message] === FINE OK ===", flush=True)
     except Exception as e:
@@ -822,6 +967,7 @@ def _process_message_impl(
     media_url_0: str = "",
     media_content_type_0: str = "",
     message_sid: str = "",
+    profile_name: str = "",
 ) -> None:
     message_text = body.strip() if body else ""
     uploaded_media_path = None
@@ -829,7 +975,7 @@ def _process_message_impl(
     from_phone = _normalize_phone(from_number)
 
     # Multi-tenant routing: il numero mittente deve esistere in `pazienti`.
-    paziente_id, medico_id = get_paziente_by_phone(from_phone)
+    paziente_id, medico_id, current_nome = get_paziente_by_phone(from_phone)
     if paziente_id is None:
         print(
             f"[ROUTING] Mittente non censito ({from_phone}). Elaborazione terminata senza INSERT.",
@@ -898,6 +1044,17 @@ def _process_message_impl(
                     print(f"ERRORE upload media referti: {e}")
 
     print("[OpenAI] Inizio estrazione triage (GPT)…", flush=True)
+    extracted_patient_name = extract_patient_name_with_openai(message_text)
+    if extracted_patient_name:
+        _update_paziente_name_if_allowed(
+            paziente_id=paziente_id,
+            new_name=extracted_patient_name,
+            profile_name_guess=profile_name,
+            only_if_current_null=False,
+        )
+    elif current_nome:
+        print("[NOME] Nessun nome rilevato nel messaggio corrente.", flush=True)
+
     extracted = extract_fields_with_openai(message_text, from_number)
     print("[OpenAI] Estrazione triage completata.", flush=True)
     print("ESTRAZIONE GPT-4O-MINI (JSON)", flush=True)
@@ -925,6 +1082,7 @@ def twilio_webhook(
     MediaUrl0: str = Form(default=""),
     MediaContentType0: str = Form(default=""),
     MessageSid: str = Form(default=""),
+    ProfileName: str = Form(default=""),
 ) -> Response:
     print("🚨 RICEVUTO MESSAGGIO DA TWILIO! 🚨", flush=True)
     # Riceve il POST da Twilio (application/x-www-form-urlencoded).
@@ -938,6 +1096,8 @@ def twilio_webhook(
     print(f"  Destinatario (To): {To}", flush=True)
     print(f"  Messaggio (Body): {Body}", flush=True)
     print(f"  NumMedia: {NumMedia}", flush=True)
+    if ProfileName:
+        print(f"  ProfileName: {ProfileName}", flush=True)
     if NumMedia > 0:
         print(f"  MediaUrl0: {MediaUrl0}", flush=True)
         print(f"  MediaContentType0: {MediaContentType0}", flush=True)
@@ -946,6 +1106,7 @@ def twilio_webhook(
     print(f"{separator}\n", flush=True)
 
     from_phone = _normalize_phone(From)
+    profile_name = _normalize_person_name(ProfileName)
     incoming_text = (Body or "").strip()
     twiml = "<Response></Response>"
 
@@ -996,6 +1157,14 @@ def twilio_webhook(
             )
             return Response(content=twiml, media_type="application/xml")
 
+        if profile_name:
+            _update_paziente_name_if_allowed(
+                paziente_id=linked_pid,
+                new_name=profile_name,
+                profile_name_guess=profile_name,
+                only_if_current_null=True,
+            )
+
         if not linked_consent:
             _send_whatsapp_template(
                 to_number=from_phone,
@@ -1027,6 +1196,13 @@ def twilio_webhook(
         return Response(content=twiml, media_type="application/xml")
 
     paziente_id, medico_id, gdpr_consent = patient_row
+    if profile_name:
+        _update_paziente_name_if_allowed(
+            paziente_id=paziente_id,
+            new_name=profile_name,
+            profile_name_guess=profile_name,
+            only_if_current_null=True,
+        )
 
     # --- 3) Pending GDPR (collegato ma consenso assente) ---
     if not gdpr_consent:
@@ -1062,6 +1238,7 @@ def twilio_webhook(
         MediaUrl0,
         MediaContentType0,
         MessageSid,
+        profile_name or "",
     )
     print("[webhook] Risposta TwiML 200 (routing standard completato).", flush=True)
     return Response(content=twiml, media_type="application/xml")
