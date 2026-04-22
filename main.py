@@ -51,8 +51,8 @@ supabase: Client | None = (
     else None
 )
 
-# Twilio Content Template (GDPR) — variabili vuote come richiesto dall'API.
-GDPR_CONSENT_WHATSAPP_TEMPLATE_SID = "HXcac55c6a25f18c112a523850f8f59ca7"
+# Twilio Content Template (GDPR) senza variabili.
+GDPR_CONSENT_WHATSAPP_TEMPLATE_SID = "HXa9cb1f2bbffe1e2a078daf05ad19a956"
 
 
 def _jwt_role_hint(key: str | None) -> str:
@@ -306,7 +306,6 @@ def _send_whatsapp_template(to_number: str, template_sid: str):
             from_=from_number,
             to=to_number,
             content_sid=template_sid,
-            content_variables="{}",
         )
         print(f"TWILIO TEMPLATE OK: SID {message.sid}", flush=True)
     except Exception as e:
