@@ -1,7 +1,6 @@
 # 🌊 MedFlow
 **The AI-Powered Visit Copilot for doctors.**
 
-![MedFlow UI Preview](https://via.placeholder.com/1000x500?text=Premium+Next.js+Dashboard+Preview) ## 📖 Overview
 Being a doctor is a calling, but today, that calling is being drowned in a sea of administrative noise. Doctors waste hours deciphering chaotic info, asking routine anamnesis questions, and squinting at photos of old, crumpled lab results. It’s not just inefficient; it’s a barrier between the healer and the patient.
 
 **MedFlow** changes this. It is an active clinical copilot that takes the raw chaos of patient clinical history and elegantly transforms it into structured and clear info. 
