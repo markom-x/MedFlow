@@ -1,5 +1,3 @@
-# MedFlow ⚡
-
 # 🌊 MedFlow
 **The AI-Powered Visit Copilot for doctors.**
 
