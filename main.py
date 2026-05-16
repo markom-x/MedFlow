@@ -457,6 +457,138 @@ def _send_whatsapp_template(to_number: str, template_sid: str):
         raise e
 
 
+def _claim_message_sid(message_sid: str) -> bool:
+    """
+    Idempotenza dei retry Twilio.
+
+    Tenta un INSERT su `public.webhook_seen(message_sid)`. Comportamento:
+    - sid vuoto/None -> ritorna True (niente da deduplicare, lascia procedere);
+    - INSERT riuscito -> ritorna True (primo arrivo, procedi);
+    - violazione di unique/PK -> ritorna False (e' un retry Twilio, scarta);
+    - qualunque altro errore (rete, DB, tabella mancante, ecc.) -> log + True
+      (fail-open: meglio elaborare due volte un messaggio che perderlo, dato
+      che senza la migrazione applicata la tabella non esiste).
+    """
+    sid = (message_sid or "").strip()
+    if not sid:
+        return True
+    if not supabase:
+        print("[idempotenza] Supabase non configurato: claim skip (fail-open).", flush=True)
+        return True
+    try:
+        supabase.table("webhook_seen").insert({"message_sid": sid}).execute()
+        print(f"[idempotenza] MessageSid={sid} claimed (primo arrivo).", flush=True)
+        return True
+    except Exception as e:
+        msg = str(e).lower()
+        if "duplicate" in msg or "unique" in msg or "23505" in msg or "conflict" in msg:
+            print(f"[idempotenza] MessageSid={sid} gia presente (retry Twilio).", flush=True)
+            return False
+        print(
+            f"[idempotenza] Errore claim MessageSid={sid}: {type(e).__name__}: {e} "
+            "(fail-open, procedo).",
+            flush=True,
+        )
+        traceback.print_exc()
+        return True
+
+
+def _log_conversation_turn(
+    paziente_id: str | None,
+    medico_id: str | None,
+    role: str,
+    content: str | None = None,
+    message_sid: str | None = None,
+    url_media: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """
+    Inserisce un turno nella tabella `conversazioni`. Best-effort:
+    non solleva mai, log + traceback in caso di errore. Il logging dei turni
+    NON deve mai bloccare l'invio WhatsApp o l'INSERT su `richieste`.
+
+    `role` deve essere uno tra: user, assistant_bot, assistant_doctor, tool, system
+    (vincolato dal CHECK constraint della tabella).
+    """
+    allowed_roles = {"user", "assistant_bot", "assistant_doctor", "tool", "system"}
+    if role not in allowed_roles:
+        print(f"[conversazioni] role non valido: {role!r}, skip log.", flush=True)
+        return
+    if not paziente_id or not medico_id:
+        print(
+            "[conversazioni] paziente_id/medico_id mancanti, skip log "
+            f"(role={role}, message_sid={message_sid!r}).",
+            flush=True,
+        )
+        return
+    if not supabase:
+        print("[conversazioni] Supabase non configurato, skip log.", flush=True)
+        return
+    try:
+        payload: dict = {
+            "paziente_id": paziente_id,
+            "medico_id": medico_id,
+            "role": role,
+            "content": content,
+            "url_media": url_media,
+            "message_sid": (message_sid or None),
+            "metadata": metadata or {},
+        }
+        supabase.table("conversazioni").insert(payload).execute()
+        print(
+            f"[conversazioni] turno loggato (role={role}, paziente_id={paziente_id}).",
+            flush=True,
+        )
+    except Exception as e:
+        print(
+            f"[conversazioni] ERRORE log turno (role={role}): {type(e).__name__}: {e}",
+            flush=True,
+        )
+        traceback.print_exc()
+
+
+def _send_whatsapp_reply_and_log(
+    to_number: str,
+    text: str,
+    paziente_id: str | None = None,
+    medico_id: str | None = None,
+) -> None:
+    """
+    Wrapper: invia la reply WhatsApp e, se gli id sono noti, logga il turno
+    come `assistant_bot`. Non modifica `_send_whatsapp_reply`.
+    """
+    _send_whatsapp_reply(to_number, text)
+    if paziente_id and medico_id:
+        _log_conversation_turn(
+            paziente_id=paziente_id,
+            medico_id=medico_id,
+            role="assistant_bot",
+            content=text,
+        )
+
+
+def _send_whatsapp_template_and_log(
+    to_number: str,
+    template_sid: str,
+    paziente_id: str | None = None,
+    medico_id: str | None = None,
+) -> None:
+    """
+    Wrapper: invia il template WhatsApp e, se gli id sono noti, logga il turno
+    come `assistant_bot` con `content=None` e `metadata={"template_sid": ...}`.
+    Non modifica `_send_whatsapp_template`.
+    """
+    _send_whatsapp_template(to_number, template_sid)
+    if paziente_id and medico_id:
+        _log_conversation_turn(
+            paziente_id=paziente_id,
+            medico_id=medico_id,
+            role="assistant_bot",
+            content=None,
+            metadata={"template_sid": template_sid},
+        )
+
+
 def _extract_activation_medico_id(text: str) -> str | None:
     """
     Estrae il codice da messaggi tipo:
@@ -990,6 +1122,15 @@ def _process_message_impl(
         )
         return
 
+    _log_conversation_turn(
+        paziente_id=paziente_id,
+        medico_id=medico_id,
+        role="user",
+        content=body,
+        message_sid=message_sid or None,
+        url_media=(media_url_clean or None),
+    )
+
     if num_media > 0 and not media_url_clean:
         print(
             "ERRORE: NumMedia > 0 ma MediaUrl0 assente o vuoto: "
@@ -1106,13 +1247,19 @@ def twilio_webhook(
         print(f"  MessageSid: {MessageSid}", flush=True)
     print(f"{separator}\n", flush=True)
 
+    twiml = "<Response></Response>"
+
+    if MessageSid and not _claim_message_sid(MessageSid):
+        print("[idempotenza] MessageSid gia processato, skip", flush=True)
+        return Response(content=twiml, media_type="application/xml")
+
     from_phone = _normalize_phone(From)
     profile_name = _normalize_person_name(ProfileName)
     incoming_text = (Body or "").strip()
-    twiml = "<Response></Response>"
+    media_url_clean = (MediaUrl0 or "").strip() or None
 
     if not supabase:
-        _send_whatsapp_reply(
+        _send_whatsapp_reply_and_log(
             from_phone,
             "Errore temporaneo. Riprova tra poco o contatta il tuo medico.",
         )
@@ -1127,7 +1274,7 @@ def twilio_webhook(
                 f"ERRORE attivazione: UUID mancante/non valido nel testo: {incoming_text!r}",
                 flush=True,
             )
-            _send_whatsapp_reply(
+            _send_whatsapp_reply_and_log(
                 from_phone,
                 "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
             )
@@ -1138,7 +1285,7 @@ def twilio_webhook(
                 f"ERRORE attivazione: medico_id non trovato in tabella medici: {activation_medico_id}",
                 flush=True,
             )
-            _send_whatsapp_reply(
+            _send_whatsapp_reply_and_log(
                 from_phone,
                 "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
             )
@@ -1152,11 +1299,20 @@ def twilio_webhook(
                 "ERRORE: attivazione richiesta ma link paziente-medico non riuscito.",
                 flush=True,
             )
-            _send_whatsapp_reply(
+            _send_whatsapp_reply_and_log(
                 from_phone,
                 "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
             )
             return Response(content=twiml, media_type="application/xml")
+
+        _log_conversation_turn(
+            paziente_id=linked_pid,
+            medico_id=linked_mid,
+            role="user",
+            content=Body,
+            message_sid=MessageSid or None,
+            url_media=media_url_clean,
+        )
 
         if profile_name:
             _update_paziente_name_if_allowed(
@@ -1167,9 +1323,11 @@ def twilio_webhook(
             )
 
         if not linked_consent:
-            _send_whatsapp_template(
+            _send_whatsapp_template_and_log(
                 to_number=from_phone,
-                template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID
+                template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
+                paziente_id=linked_pid,
+                medico_id=linked_mid,
             )
             print(
                 "[GDPR] Dopo attivazione: consenso mancante, template GDPR inviato e stop.",
@@ -1177,20 +1335,25 @@ def twilio_webhook(
             )
             return Response(content=twiml, media_type="application/xml")
 
-        _send_whatsapp_reply(from_phone, "Attivazione completata")
+        _send_whatsapp_reply_and_log(
+            from_phone,
+            "Attivazione completata",
+            paziente_id=linked_pid,
+            medico_id=linked_mid,
+        )
         return Response(content=twiml, media_type="application/xml")
 
     # --- 2) Not linked yet (nessun comando di attivazione) ---
     patient_row = fetch_paziente_if_exists(from_phone)
     if patient_row == "error":
-        _send_whatsapp_reply(
+        _send_whatsapp_reply_and_log(
             from_phone,
             "Errore temporaneo. Riprova tra poco o contatta il tuo medico.",
         )
         return Response(content=twiml, media_type="application/xml")
 
     if patient_row is None or not patient_row[1]:
-        _send_whatsapp_reply(
+        _send_whatsapp_reply_and_log(
             from_phone,
             "Benvenuto in MedFlow! Per iniziare, inviami il codice di attivazione che ti ha fornito il tuo medico.",
         )
@@ -1208,22 +1371,36 @@ def twilio_webhook(
     # --- 3) Pending GDPR (collegato ma consenso assente) ---
     if not gdpr_consent:
         if incoming_text.lower() == "accetto":
+            _log_conversation_turn(
+                paziente_id=paziente_id,
+                medico_id=medico_id,
+                role="user",
+                content=Body,
+                message_sid=MessageSid or None,
+                url_media=media_url_clean,
+            )
             updated = set_paziente_gdpr_consent(paziente_id, True)
             if updated:
-                _send_whatsapp_reply(
+                _send_whatsapp_reply_and_log(
                     from_phone,
                     "Grazie! Ora puoi scrivermi i tuoi sintomi.",
+                    paziente_id=paziente_id,
+                    medico_id=medico_id,
                 )
             else:
-                _send_whatsapp_reply(
+                _send_whatsapp_reply_and_log(
                     from_phone,
                     "Errore durante la registrazione del consenso. Riprova.",
+                    paziente_id=paziente_id,
+                    medico_id=medico_id,
                 )
             return Response(content=twiml, media_type="application/xml")
 
-        _send_whatsapp_template(
+        _send_whatsapp_template_and_log(
             to_number=from_phone,
-            template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID
+            template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
+            paziente_id=paziente_id,
+            medico_id=medico_id,
         )
         print(
             "[GDPR] Consenso mancante: template reinviato, messaggio non processato.",

@@ -1,0 +1,71 @@
+---
+description: MedFlow project architecture, target state, and conventions
+alwaysApply: true
+---
+
+# MedFlow — AI Visit Copilot (project brief)
+
+## Cos'è MedFlow oggi
+Copilot clinico per medici di medicina generale. I pazienti scrivono al numero
+WhatsApp del medico. Il backend FastAPI (`main.py`) elabora i messaggi (testo,
+audio Whisper, allegati) e popola una dashboard Next.js (`web-app/`) dove il
+medico vede una sintesi clinica per paziente. Tabelle: `medici`, `pazienti`,
+`richieste`. Storage Supabase con bucket `vocali` e `referti`.
+
+## Cosa diventerà MedFlow (pivot in corso)
+Un **agente conversazionale stateful** che conduce un'anamnesi multi-turno via
+WhatsApp. L'agente fa domande mirate, gestisce input multimodali (audio Whisper,
+immagini/PDF di referti con OCR via GPT-4o vision), usa RAG su pgvector per
+richiamare la storia del paziente, e a fine intervista produce un JSON clinico
+strutturato che finisce in `richieste`. **Anche il medico può inserirsi nella
+conversazione manualmente**: i suoi messaggi al paziente fanno parte dello
+stesso contesto che l'agente vede al turno successivo.
+
+## Stack
+- Backend: FastAPI monolitico in `main.py`, client Twilio per WhatsApp, client
+  Supabase service_role (bypassa RLS).
+- DB + Storage: Supabase (Postgres + buckets `referti`, `vocali`).
+- Frontend medico: Next.js 14 in `web-app/`.
+- AI oggi: `gpt-4o-mini` per triage, `whisper-1` per audio.
+- AI domani: function-calling / LangGraph, OCR via GPT-4o vision, embeddings
+  `text-embedding-3-small` su pgvector.
+
+## Tabelle target
+- `medici (id, ...)` — esiste.
+- `pazienti (id, nome, telefono, medico_id, gdpr_consent, note_private,
+  session_state, session_data, session_updated_at)` — gli ultimi 3 li aggiunge
+  il PR #1.
+- `richieste` — esiste. **Semantica futura**: una riga = un caso clinico
+  finalizzato (sintesi dell'anamnesi a fine intervista), NON un turno.
+- `conversazioni` — nuovo nel PR #1. Una riga = un turno (paziente / agente /
+  medico). Sorgente di verità per la memoria dell'agente.
+- `webhook_seen` — nuovo nel PR #1. Idempotenza dei retry Twilio.
+- `anamnesi_documenti` — nuovo, popolato nel PR #4 (chunk + embeddings OCR).
+
+## Roadmap di delivery
+1. **PR #1**: schema dati + log conversazionale + idempotenza webhook + rule + test.
+2. **PR #2**: decoupling del webhook con job queue (Render Background Worker)
+   per uscire dal limite Twilio 15s.
+3. **PR #3**: state machine + agent loop (function calling) + OCR + nuovo
+   system prompt da intervistatore.
+4. **PR #4**: pgvector + chunking + retrieval RAG.
+
+## Convenzioni del repo
+- `main.py`: FastAPI monolitico. Log italiani con `flush=True`, type hints
+  `X | None`, try/except con `traceback.print_exc()`.
+- `web-app/`: Next.js 14 (NON la versione delle tue training data — leggi
+  `web-app/AGENTS.md` prima di toccarlo).
+- Migrazioni SQL versionate in `web-app/sql/<descrizione>.sql`, eseguite
+  manualmente in Supabase Studio. Mai eseguire SQL da codice.
+- Client Supabase: solo service_role nel backend (bypassa RLS, le INSERT da
+  webhook altrimenti falliscono).
+- Storage: bucket `vocali` per audio, `referti` per immagini/PDF. Path
+  relativo: `{telefono_paziente}/{filename}`.
+
+## Quando l'utente apre una chat in questo repo
+- Assumi che il pivot al copilot agentico sia IN CORSO, non finito.
+- Chiedi quale PR della roadmap stiamo affrontando se non è chiaro.
+- Non riproporre LangChain prima del PR #3, non proporre pgvector prima del PR #4.
+- Bug noto latente: `extract_fields_with_openai` scrive `urgenza =
+  "ROSSO"|"GIALLO"|"VERDE"` ma la dashboard (`web-app/lib/dashboard/format.ts`)
+  cerca `"alta"|"media"|"bassa"`. Lo risolve il nuovo agente in PR #3.
