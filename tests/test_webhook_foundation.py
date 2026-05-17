@@ -66,6 +66,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(main, "_log_conversation_turn", MagicMock(return_value=None))
     monkeypatch.setattr(main, "_send_whatsapp_reply_and_log", MagicMock(return_value=None))
     monkeypatch.setattr(main, "_send_whatsapp_template_and_log", MagicMock(return_value=None))
+    monkeypatch.setattr(
+        main, "_enqueue_process_message_job", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(main, "process_message", MagicMock(return_value=None))
 
     monkeypatch.setattr(main, "_medico_exists", MagicMock(return_value=True))
     monkeypatch.setattr(
@@ -94,11 +98,12 @@ def _user_logged_with_role_user(call_args_list) -> bool:
     return False
 
 
-def test_happy_path_logs_user_and_inserts_richiesta(client: TestClient) -> None:
+def test_happy_path_enqueues_and_logs_user(client: TestClient) -> None:
     """
-    Test 1 — happy path: paziente esistente con GDPR accettato.
-    Il webhook deve elaborare il messaggio, chiamare insert_richiesta una volta
-    e loggare almeno un turno conversazionale con role='user'.
+    Test 1 — happy path (PR #2 architecture): paziente esistente, GDPR accettato.
+    Il webhook NON elabora piu' in sincrono: deve loggare il turno user
+    e accodare un job per il worker. `process_message` (sync) NON deve essere
+    chiamato finche' l'enqueue va a buon fine.
     """
     response = client.post(
         "/webhook",
@@ -111,9 +116,36 @@ def test_happy_path_logs_user_and_inserts_richiesta(client: TestClient) -> None:
     )
 
     assert response.status_code == 200
-    assert main.insert_richiesta.call_count == 1
+    assert main._enqueue_process_message_job.call_count == 1
+    assert main.process_message.call_count == 0
     assert main._log_conversation_turn.call_count >= 1
     assert _user_logged_with_role_user(main._log_conversation_turn.call_args_list)
+
+
+def test_happy_path_falls_back_to_sync_when_enqueue_fails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test 1bis — fallback retrocompat: se l'enqueue fallisce (es. migrazione PR #2
+    non ancora applicata), il webhook elabora in sincrono come PR #1.
+    """
+    monkeypatch.setattr(
+        main, "_enqueue_process_message_job", MagicMock(return_value=False)
+    )
+
+    response = client.post(
+        "/webhook",
+        data={
+            "From": "whatsapp:+393331234567",
+            "Body": "Ho mal di testa",
+            "MessageSid": "SM_OK_002",
+            "NumMedia": "0",
+        },
+    )
+
+    assert response.status_code == 200
+    assert main._enqueue_process_message_job.call_count == 1
+    assert main.process_message.call_count == 1
 
 
 def test_retry_duplicate_is_skipped(
@@ -136,7 +168,8 @@ def test_retry_duplicate_is_skipped(
     )
 
     assert response.status_code == 200
-    assert main.insert_richiesta.call_count == 0
+    assert main._enqueue_process_message_job.call_count == 0
+    assert main.process_message.call_count == 0
     assert main._log_conversation_turn.call_count == 0
 
 
@@ -170,3 +203,5 @@ def test_onboarding_activation_sends_gdpr_template_and_logs_user(
     assert _user_logged_with_role_user(main._log_conversation_turn.call_args_list)
 
     assert main.insert_richiesta.call_count == 0
+    assert main._enqueue_process_message_job.call_count == 0
+    assert main.process_message.call_count == 0

@@ -43,9 +43,12 @@ stesso contesto che l'agente vede al turno successivo.
 - `anamnesi_documenti` — nuovo, popolato nel PR #4 (chunk + embeddings OCR).
 
 ## Roadmap di delivery
-1. **PR #1**: schema dati + log conversazionale + idempotenza webhook + rule + test.
-2. **PR #2**: decoupling del webhook con job queue (Render Background Worker)
-   per uscire dal limite Twilio 15s.
+1. **PR #1 (DONE)**: schema dati + log conversazionale + idempotenza webhook
+   + rule + test.
+2. **PR #2 (DONE)**: decoupling del webhook con job queue Postgres
+   (`public.jobs` + `claim_one_job()` con FOR UPDATE SKIP LOCKED) e
+   `worker.py` come Render Background Worker. Il webhook ora logga il turno
+   user in sincrono e accoda; fallback sincrono se la migrazione non e' applicata.
 3. **PR #3**: state machine + agent loop (function calling) + OCR + nuovo
    system prompt da intervistatore.
 4. **PR #4**: pgvector + chunking + retrieval RAG.
@@ -53,6 +56,11 @@ stesso contesto che l'agente vede al turno successivo.
 ## Convenzioni del repo
 - `main.py`: FastAPI monolitico. Log italiani con `flush=True`, type hints
   `X | None`, try/except con `traceback.print_exc()`.
+- `worker.py`: Background Worker. Importa `_process_message_impl` e `supabase`
+  da `main.py` (stesso processo Python di Render, dipendenze condivise).
+- `render.yaml`: blueprint con due servizi (`medflow-api` web, `medflow-worker`
+  worker). Il piano Free di Render NON supporta i Background Worker: serve
+  almeno Starter sul worker.
 - `web-app/`: Next.js 14 (NON la versione delle tue training data — leggi
   `web-app/AGENTS.md` prima di toccarlo).
 - Migrazioni SQL versionate in `web-app/sql/<descrizione>.sql`, eseguite

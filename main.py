@@ -589,6 +589,56 @@ def _send_whatsapp_template_and_log(
         )
 
 
+def _enqueue_process_message_job(
+    from_number: str,
+    body: str,
+    num_media: int,
+    media_url_0: str,
+    media_content_type_0: str,
+    message_sid: str,
+    profile_name: str,
+) -> bool:
+    """
+    Inserisce un job 'process_message' nella coda `public.jobs` (PR #2).
+    Il worker (`worker.py`) lo consuma con `claim_one_job()`.
+
+    Ritorna True se l'INSERT e' andato a buon fine, False altrimenti.
+    Il chiamante decide la strategia di fallback (es. elaborazione sincrona).
+    Errori comuni:
+      - tabella `jobs` non ancora creata (migrazione non applicata) -> False
+      - Supabase non configurato -> False
+    """
+    if not supabase:
+        print("[queue] Supabase non configurato: enqueue skip.", flush=True)
+        return False
+    payload = {
+        "from_number": from_number,
+        "body": body,
+        "num_media": int(num_media or 0),
+        "media_url_0": media_url_0 or "",
+        "media_content_type_0": media_content_type_0 or "",
+        "message_sid": message_sid or "",
+        "profile_name": profile_name or "",
+    }
+    try:
+        supabase.table("jobs").insert(
+            {
+                "kind": "process_message",
+                "payload": payload,
+                "message_sid": (message_sid or None),
+            }
+        ).execute()
+        print(
+            f"[queue] Job process_message enqueued (message_sid={message_sid or 'none'}).",
+            flush=True,
+        )
+        return True
+    except Exception as e:
+        print(f"[queue] ERRORE enqueue job: {type(e).__name__}: {e}", flush=True)
+        traceback.print_exc()
+        return False
+
+
 def _extract_activation_medico_id(text: str) -> str | None:
     """
     Estrae il codice da messaggi tipo:
@@ -1122,14 +1172,8 @@ def _process_message_impl(
         )
         return
 
-    _log_conversation_turn(
-        paziente_id=paziente_id,
-        medico_id=medico_id,
-        role="user",
-        content=body,
-        message_sid=message_sid or None,
-        url_media=(media_url_clean or None),
-    )
+    # Nota PR #2: il log del turno user e' ora a carico del webhook (sincrono,
+    # prima dell'enqueue). Il worker non lo rifa per evitare duplicati.
 
     if num_media > 0 and not media_url_clean:
         print(
@@ -1409,15 +1453,42 @@ def twilio_webhook(
         return Response(content=twiml, media_type="application/xml")
 
     # --- 4) Normal flow (AI / media) ---
-    process_message(
-        from_phone,
-        Body,
-        NumMedia,
-        MediaUrl0,
-        MediaContentType0,
-        MessageSid,
-        profile_name or "",
+    # PR #2: il webhook NON chiama piu' process_message in modo sincrono.
+    # Logga subito il turno user (cosi' la dashboard lo vede all'istante anche
+    # se il worker e' in lag) e accoda un job per `worker.py`. Se l'enqueue
+    # fallisce (tipicamente: migrazione non applicata) si esegue in sincrono
+    # come fallback retrocompatibile.
+    _log_conversation_turn(
+        paziente_id=paziente_id,
+        medico_id=medico_id,
+        role="user",
+        content=Body,
+        message_sid=MessageSid or None,
+        url_media=media_url_clean,
     )
+    enqueued = _enqueue_process_message_job(
+        from_number=from_phone,
+        body=Body,
+        num_media=NumMedia,
+        media_url_0=MediaUrl0,
+        media_content_type_0=MediaContentType0,
+        message_sid=MessageSid,
+        profile_name=profile_name or "",
+    )
+    if not enqueued:
+        print(
+            "[webhook] enqueue non riuscito, fallback elaborazione sincrona.",
+            flush=True,
+        )
+        process_message(
+            from_phone,
+            Body,
+            NumMedia,
+            MediaUrl0,
+            MediaContentType0,
+            MessageSid,
+            profile_name or "",
+        )
     print("[webhook] Risposta TwiML 200 (routing standard completato).", flush=True)
     return Response(content=twiml, media_type="application/xml")
 

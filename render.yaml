@@ -1,0 +1,68 @@
+# MedFlow Render Blueprint (PR #2).
+#
+# Definisce due servizi dallo stesso repo:
+#   - medflow-api    (Web Service)        -> FastAPI, riceve i webhook Twilio.
+#   - medflow-worker (Background Worker)  -> consuma la coda public.jobs.
+#
+# IMPORTANTE: i Background Worker NON sono disponibili sul piano Free di Render
+# (servono almeno Starter, ~7$/mese). Il piano dichiarato qui sotto e' "starter":
+# adattalo se serve. Se non vuoi adottare subito il worker, riduci enableManualDeploy
+# a false o cancella la sezione del worker e applica lo Yaml ridotto.
+#
+# Le envVars con `sync: false` NON sono memorizzate in chiaro: Render le chiede
+# in dashboard al primo deploy del blueprint. Le envVars con `value` esplicito
+# sono ok in chiaro (poll/backoff sono knob non sensibili).
+services:
+  - type: web
+    name: medflow-api
+    runtime: python
+    plan: starter
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+
+  - type: worker
+    name: medflow-worker
+    runtime: python
+    plan: starter
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: WORKER_POLL_INTERVAL_S
+        value: "2"
+      - key: WORKER_BACKOFF_BASE_S
+        value: "10"
+      - key: WORKER_BACKOFF_CAP_S
+        value: "3600"
