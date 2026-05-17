@@ -40,7 +40,10 @@ stesso contesto che l'agente vede al turno successivo.
 - `conversazioni` — nuovo nel PR #1. Una riga = un turno (paziente / agente /
   medico). Sorgente di verità per la memoria dell'agente.
 - `webhook_seen` — nuovo nel PR #1. Idempotenza dei retry Twilio.
-- `anamnesi_documenti` — nuovo, popolato nel PR #4 (chunk + embeddings OCR).
+- `anamnesi_documenti` — chunk + embedding 1536d (`text-embedding-3-small`)
+  della storia clinica del paziente. Popolata dall'agent: OCR referti
+  (source_type=`referto_ocr`) e sintesi cliniche dei casi finalizzati
+  (`richiesta_sintesi`). Consumata via RPC `match_anamnesi_documenti`.
 
 ## Roadmap di delivery
 1. **PR #1 (DONE)**: schema dati + log conversazionale + idempotenza webhook
@@ -57,7 +60,16 @@ stesso contesto che l'agente vede al turno successivo.
    `pazienti.session_state` + `pazienti.session_data`; storia in
    `conversazioni`. Worker chiama `agent.run_for_job(payload)`. Fallback al
    path legacy via env `WORKER_USE_LEGACY=1`. Dev: worker gira locale.
-4. **PR #4**: pgvector + chunking + retrieval RAG su `anamnesi_documenti`.
+4. **PR #4 (DONE)**: pgvector + RAG. Tabella `anamnesi_documenti` (chunk +
+   embedding 1536d) con index HNSW cosine; RPC `match_anamnesi_documenti`
+   per la similarity search. Agent: chunker char-based con overlap,
+   embeddings via `text-embedding-3-small`, due nuovi nodi nel grafo
+   (`retrieval` prima del copilot, `embed_and_index` dopo, gated da flag
+   `needs_indexing`). Le sintesi cliniche sono indicizzate dal synthesizer
+   stesso per il RAG delle visite future. Topologia ora:
+   START -> input_router --cond--> {vision_ocr | whisper | retrieval}
+   - vision_ocr | whisper -> retrieval -> embed_and_index -> copilot
+   - copilot --cond--> {END | clinical_synthesizer -> END}.
 
 ## Convenzioni del repo
 - `main.py`: FastAPI monolitico. Log italiani con `flush=True`, type hints

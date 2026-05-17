@@ -318,6 +318,10 @@ def test_run_for_job_vision_path_appends_extracted_doc(
             )
         ),
     )
+    # PR #4: nodi retrieval / embed_and_index sono nel grafo; li azzeriamo per
+    # questo test cosi' verifichiamo solo la propagazione di extracted_docs.
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
+    monkeypatch.setattr(agent, "index_document", MagicMock(return_value=0))
 
     out = agent.run_for_job(
         _payload(
@@ -332,3 +336,358 @@ def test_run_for_job_vision_path_appends_extracted_doc(
     saved_data = agent.save_session.call_args.args[2]
     assert isinstance(saved_data.get("extracted_docs"), list)
     assert saved_data["extracted_docs"][-1]["extracted_text"].startswith("Emoglobina")
+
+
+# --------------------------- PR #4: chunking ---------------------------
+
+def test_chunk_text_empty_returns_empty() -> None:
+    assert agent.chunk_text("") == []
+    assert agent.chunk_text("   \n  ") == []
+
+
+def test_chunk_text_short_returns_single() -> None:
+    s = "Referto breve."
+    assert agent.chunk_text(s, chunk_size=100, overlap=10) == [s]
+
+
+def test_chunk_text_long_splits_with_overlap() -> None:
+    s = "x" * 250
+    chunks = agent.chunk_text(s, chunk_size=100, overlap=20)
+    assert len(chunks) >= 3
+    assert all(len(c) <= 100 for c in chunks)
+    # Le finestre si sovrappongono: i primi 20 char del chunk[1] devono coincidere
+    # con gli ultimi 20 di chunk[0].
+    assert chunks[1][:20] == chunks[0][-20:]
+
+
+def test_chunk_text_invalid_overlap_raises() -> None:
+    with pytest.raises(ValueError):
+        agent.chunk_text("abc", chunk_size=10, overlap=10)
+    with pytest.raises(ValueError):
+        agent.chunk_text("abc", chunk_size=10, overlap=-1)
+
+
+# --------------------------- PR #4: embeddings ---------------------------
+
+def _fake_embedding(dim: int = 1536, seed: float = 0.1) -> list[float]:
+    return [seed] * dim
+
+
+def test_embed_texts_returns_empty_when_no_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent, "openai_client", None)
+    assert agent._embed_texts(["ciao"]) == []
+    assert agent._embed_text("ciao") is None
+
+
+def test_embed_texts_batches_and_returns_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_resp = MagicMock()
+    fake_resp.data = [
+        MagicMock(embedding=_fake_embedding(seed=0.1)),
+        MagicMock(embedding=_fake_embedding(seed=0.2)),
+    ]
+    fake_client = MagicMock()
+    fake_client.embeddings.create.return_value = fake_resp
+    monkeypatch.setattr(agent, "openai_client", fake_client)
+
+    out = agent._embed_texts(["a", "b"])
+    assert len(out) == 2
+    assert out[0][0] == pytest.approx(0.1)
+    assert out[1][0] == pytest.approx(0.2)
+    fake_client.embeddings.create.assert_called_once()
+
+
+# --------------------------- PR #4: index_document ---------------------------
+
+def test_index_document_inserts_one_row_per_chunk(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        agent,
+        "_embed_texts",
+        MagicMock(return_value=[_fake_embedding(seed=0.1), _fake_embedding(seed=0.2)]),
+    )
+    monkeypatch.setattr(
+        agent,
+        "chunk_text",
+        MagicMock(return_value=["chunk uno", "chunk due"]),
+    )
+
+    n = agent.index_document(
+        paziente_id=PAZIENTE_ID,
+        medico_id=MEDICO_ID,
+        source_type="referto_ocr",
+        source_id="SM_TEST_001",
+        text="testo lungo",
+        metadata={"content_type": "image/jpeg"},
+    )
+    assert n == 2
+    insert_call = supa_mock.table.return_value.insert
+    insert_call.assert_called_once()
+    rows = insert_call.call_args.args[0]
+    assert len(rows) == 2
+    assert rows[0]["chunk_index"] == 0
+    assert rows[1]["chunk_index"] == 1
+    assert rows[0]["source_type"] == "referto_ocr"
+    assert rows[0]["source_id"] == "SM_TEST_001"
+    assert rows[0]["paziente_id"] == PAZIENTE_ID
+    assert rows[0]["medico_id"] == MEDICO_ID
+    assert isinstance(rows[0]["embedding"], list)
+    assert len(rows[0]["embedding"]) == 1536
+
+
+def test_index_document_skips_empty_text(supa_mock: MagicMock) -> None:
+    assert agent.index_document(PAZIENTE_ID, MEDICO_ID, "referto_ocr", None, "") == 0
+    supa_mock.table.return_value.insert.assert_not_called()
+
+
+def test_index_document_skips_when_embedding_fails(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent, "chunk_text", MagicMock(return_value=["chunk uno"]))
+    monkeypatch.setattr(agent, "_embed_texts", MagicMock(return_value=[]))
+    assert (
+        agent.index_document(PAZIENTE_ID, MEDICO_ID, "referto_ocr", None, "x" * 10)
+        == 0
+    )
+    supa_mock.table.return_value.insert.assert_not_called()
+
+
+# --------------------------- PR #4: retrieve_relevant_chunks ---------------------------
+
+def test_retrieve_returns_empty_for_short_query(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent, "_embed_text", MagicMock(return_value=_fake_embedding()))
+    out = agent.retrieve_relevant_chunks(PAZIENTE_ID, "ah")
+    assert out == []
+    supa_mock.rpc.assert_not_called()
+
+
+def test_retrieve_calls_match_rpc_and_returns_data(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent, "_embed_text", MagicMock(return_value=_fake_embedding()))
+    supa_mock.rpc.return_value.execute.return_value.data = [
+        {
+            "id": "c1",
+            "source_type": "referto_ocr",
+            "content": "Emoglobina 12.4",
+            "similarity": 0.83,
+            "metadata": {},
+            "created_at": "2026-05-01T10:00:00Z",
+        }
+    ]
+    out = agent.retrieve_relevant_chunks(PAZIENTE_ID, "ho fatto le analisi del sangue")
+    assert len(out) == 1
+    assert out[0]["similarity"] == pytest.approx(0.83)
+    supa_mock.rpc.assert_called_once()
+    rpc_args = supa_mock.rpc.call_args
+    assert rpc_args.args[0] == "match_anamnesi_documenti"
+    rpc_payload = rpc_args.args[1]
+    assert rpc_payload["match_paziente_id"] == PAZIENTE_ID
+    assert isinstance(rpc_payload["query_embedding"], list)
+
+
+def test_retrieve_returns_empty_on_rpc_error(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent, "_embed_text", MagicMock(return_value=_fake_embedding()))
+    supa_mock.rpc.return_value.execute.side_effect = RuntimeError("rpc down")
+    out = agent.retrieve_relevant_chunks(PAZIENTE_ID, "una query abbastanza lunga")
+    assert out == []
+
+
+# --------------------------- PR #4: nodi retrieval / embed_and_index ---------------------------
+
+def test_node_retrieval_injects_system_message_when_chunks_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        agent,
+        "retrieve_relevant_chunks",
+        MagicMock(
+            return_value=[
+                {
+                    "source_type": "richiesta_sintesi",
+                    "content": "Cefalea muscolo-tensiva ricorrente",
+                    "similarity": 0.71,
+                    "created_at": "2026-04-01T10:00:00Z",
+                }
+            ]
+        ),
+    )
+    state = {
+        "paziente_id": PAZIENTE_ID,
+        "messages": [HumanMessage(content="Mi e' tornato il mal di testa")],
+    }
+    out = agent.node_retrieval(state)
+    assert "messages" in out
+    sys_msg = out["messages"][0]
+    from langchain_core.messages import SystemMessage  # local import for clarity
+    assert isinstance(sys_msg, SystemMessage)
+    assert "Cefalea muscolo-tensiva" in sys_msg.content
+
+
+def test_node_retrieval_noop_when_no_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
+    state = {
+        "paziente_id": PAZIENTE_ID,
+        "messages": [HumanMessage(content="Mi e' tornato il mal di testa")],
+    }
+    assert agent.node_retrieval(state) == {}
+
+
+def test_node_retrieval_noop_when_no_human_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_retrieve = MagicMock(return_value=[])
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", mock_retrieve)
+    state = {"paziente_id": PAZIENTE_ID, "messages": []}
+    assert agent.node_retrieval(state) == {}
+    mock_retrieve.assert_not_called()
+
+
+def test_node_embed_and_index_runs_when_flag_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_index = MagicMock(return_value=3)
+    monkeypatch.setattr(agent, "index_document", mock_index)
+    state = {
+        "needs_indexing": True,
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "message_sid": "SM_1",
+        "extracted_docs": [
+            {
+                "extracted_text": "Emoglobina 12.4 g/dL, glicemia nella norma.",
+                "content_type": "image/jpeg",
+                "source_url": "https://twilio/x",
+            }
+        ],
+    }
+    out = agent.node_embed_and_index(state)
+    assert out["needs_indexing"] is False
+    mock_index.assert_called_once()
+    kw = mock_index.call_args.kwargs
+    assert kw["source_type"] == "referto_ocr"
+    assert kw["source_id"] == "SM_1"
+
+
+def test_node_embed_and_index_skips_when_flag_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_index = MagicMock()
+    monkeypatch.setattr(agent, "index_document", mock_index)
+    state = {"needs_indexing": False, "extracted_docs": [{"extracted_text": "x"}]}
+    assert agent.node_embed_and_index(state) == {}
+    mock_index.assert_not_called()
+
+
+def test_node_embed_and_index_skips_error_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_index = MagicMock()
+    monkeypatch.setattr(agent, "index_document", mock_index)
+    state = {
+        "needs_indexing": True,
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "extracted_docs": [{"extracted_text": "[Errore OCR: TimeoutError]"}],
+    }
+    out = agent.node_embed_and_index(state)
+    assert out == {"needs_indexing": False}
+    mock_index.assert_not_called()
+
+
+# --------------------------- PR #4: synthesizer indexa la sintesi ---------------------------
+
+def test_synthesizer_indexes_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = ClinicalSynthesis(
+        chief_complaint="Dolore lombare",
+        history_of_present_illness="Da 5 giorni dopo sollevamento pesi",
+        medications=["ibuprofene 400"],
+        red_flags=[],
+        livello_urgenza="bassa",
+        sintesi_medica="Lombalgia muscolo-tensiva, gestibile in ambulatorio.",
+    )
+    monkeypatch.setattr(agent, "_synthesize_clinical", MagicMock(return_value=fake))
+    mock_index = MagicMock(return_value=1)
+    monkeypatch.setattr(agent, "index_document", mock_index)
+
+    state = {
+        "messages": [HumanMessage(content="Mi fa male la schiena da 5 giorni")],
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "message_sid": "SM_FIN_001",
+    }
+    out = agent.node_clinical_synthesizer(state)
+
+    assert out["current_phase"] == "FINISHED"
+    mock_index.assert_called_once()
+    kw = mock_index.call_args.kwargs
+    assert kw["source_type"] == "richiesta_sintesi"
+    assert "Dolore lombare" in kw["text"]
+    assert kw["metadata"]["livello_urgenza"] == "bassa"
+
+
+# --------------------------- PR #4: run_for_job con RAG attivo ---------------------------
+
+def test_run_for_job_text_path_invokes_retrieval_and_injects_context(
+    patch_run_helpers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end del path testo con RAG attivo. Simuliamo il flow reale PR #2:
+    il webhook ha gia' loggato il messaggio in `conversazioni`, quindi
+    `load_recent_conversation` lo restituisce come HumanMessage. Il nodo
+    `retrieval` ne usa il contenuto come query semantica."""
+    monkeypatch.setattr(
+        agent,
+        "load_recent_conversation",
+        MagicMock(
+            return_value=[HumanMessage(content="Mi e' tornato il mal di testa")]
+        ),
+    )
+
+    captured_messages: dict = {}
+
+    def fake_decide(messages):
+        captured_messages["msgs"] = messages
+        return CopilotDecision(
+            action="ask",
+            message_to_patient="Hai gia' provato qualche farmaco?",
+        )
+
+    monkeypatch.setattr(agent, "_decide_copilot_action", fake_decide)
+    mock_retrieve = MagicMock(
+        return_value=[
+            {
+                "source_type": "richiesta_sintesi",
+                "content": "Anamnesi precedente: cefalea ricorrente, no red flags.",
+                "similarity": 0.78,
+                "created_at": "2026-03-01T10:00:00Z",
+            }
+        ]
+    )
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", mock_retrieve)
+    monkeypatch.setattr(agent, "index_document", MagicMock(return_value=0))
+
+    out = agent.run_for_job(_payload(body="Mi e' tornato il mal di testa"))
+
+    assert out["status"] == "ok"
+    mock_retrieve.assert_called_once()
+    rpc_args = mock_retrieve.call_args
+    assert rpc_args.args[0] == PAZIENTE_ID
+    assert "mal di testa" in rpc_args.args[1]
+
+    from langchain_core.messages import SystemMessage
+
+    rag_systems = [
+        m
+        for m in captured_messages["msgs"]
+        if isinstance(m, SystemMessage) and "Contesto storico paziente" in m.content
+    ]
+    assert len(rag_systems) == 1
+    assert "cefalea ricorrente" in rag_systems[0].content

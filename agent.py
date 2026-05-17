@@ -57,6 +57,7 @@ from main import (
     download_twilio_media_requests,
     get_paziente_by_phone,
     insert_richiesta,
+    openai_client,
     supabase,
     transcribe_audio_bytes_whisper,
     upload_bytes_to_supabase_bucket,
@@ -71,8 +72,17 @@ from main import (
 
 CHAT_MODEL = os.getenv("MEDFLOW_CHAT_MODEL", "gpt-4o")
 VISION_MODEL = os.getenv("MEDFLOW_VISION_MODEL", "gpt-4o")
+EMBEDDING_MODEL = os.getenv("MEDFLOW_EMBEDDING_MODEL", "text-embedding-3-small")
+EMBEDDING_DIM = 1536  # text-embedding-3-small
 MAX_TURNS_BEFORE_FORCE_FINALIZE = int(os.getenv("MEDFLOW_MAX_TURNS", "8"))
 HISTORY_LIMIT = int(os.getenv("MEDFLOW_HISTORY_LIMIT", "30"))
+
+# RAG knob
+CHUNK_SIZE_CHARS = int(os.getenv("MEDFLOW_CHUNK_SIZE_CHARS", "1600"))
+CHUNK_OVERLAP_CHARS = int(os.getenv("MEDFLOW_CHUNK_OVERLAP_CHARS", "200"))
+RAG_TOP_K = int(os.getenv("MEDFLOW_RAG_TOP_K", "5"))
+RAG_MIN_SIMILARITY = float(os.getenv("MEDFLOW_RAG_MIN_SIMILARITY", "0.5"))
+RAG_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_RAG_MIN_QUERY_CHARS", "8"))
 
 ANAMNESIS_SYSTEM_PROMPT = """Sei un assistente medico che conduce un'anamnesi pre-visita
 per conto di un Medico di Medicina Generale. Parli al paziente via WhatsApp in italiano,
@@ -141,6 +151,9 @@ class AgentState(TypedDict, total=False):
     reply_to_send: str | None
     synthesis: dict | None
 
+    # Flag transient: settato da vision_ocr/whisper, consumato da embed_and_index.
+    needs_indexing: bool
+
     # Per debug / log
     last_error: str | None
 
@@ -172,6 +185,161 @@ class ClinicalSynthesis(BaseModel):
     red_flags: list[str] = Field(default_factory=list)
     livello_urgenza: Literal["alta", "media", "bassa"]
     sintesi_medica: str
+
+
+# --------------------------- helper RAG (chunking + embeddings) ---------------------------
+
+def chunk_text(
+    text: str,
+    chunk_size: int = CHUNK_SIZE_CHARS,
+    overlap: int = CHUNK_OVERLAP_CHARS,
+) -> list[str]:
+    """
+    Chunker semplice character-based con sliding window e overlap. Sufficiente
+    per referti OCR e sintesi cliniche (1-3 pagine tipiche).
+    - text vuoto / solo whitespace -> []
+    - text <= chunk_size -> [text]
+    - altrimenti finestre [0..chunk_size], [chunk_size-overlap..2*chunk_size-overlap], ...
+    """
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap deve essere in [0, chunk_size).")
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= chunk_size:
+        return [cleaned]
+
+    chunks: list[str] = []
+    start = 0
+    step = chunk_size - overlap
+    while start < len(cleaned):
+        end = min(start + chunk_size, len(cleaned))
+        piece = cleaned[start:end].strip()
+        if piece:
+            chunks.append(piece)
+        if end >= len(cleaned):
+            break
+        start += step
+    return chunks
+
+
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    """Batch-embed via OpenAI. Lista vuota se openai non e' configurato o errore."""
+    if not openai_client or not texts:
+        return []
+    try:
+        resp = openai_client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=texts,
+        )
+        return [d.embedding for d in resp.data]
+    except Exception as e:
+        print(f"[agent] ERRORE embed_texts: {type(e).__name__}: {e}", flush=True)
+        traceback.print_exc()
+        return []
+
+
+def _embed_text(text: str) -> list[float] | None:
+    out = _embed_texts([text])
+    return out[0] if out else None
+
+
+def index_document(
+    paziente_id: str,
+    medico_id: str,
+    source_type: str,
+    source_id: str | None,
+    text: str,
+    metadata: dict | None = None,
+) -> int:
+    """
+    Splitta `text` in chunk, li embedda e li inserisce in `anamnesi_documenti`.
+    Ritorna il numero di chunk effettivamente scritti.
+    Errori (rete, tabella mancante, ecc.) -> log + 0 (l'agent procede senza RAG).
+    """
+    if not supabase:
+        print("[agent] index_document: Supabase non configurato, skip.", flush=True)
+        return 0
+    if not paziente_id or not medico_id:
+        return 0
+    chunks = chunk_text(text)
+    if not chunks:
+        return 0
+    embeddings = _embed_texts(chunks)
+    if len(embeddings) != len(chunks):
+        print(
+            f"[agent] index_document: mismatch chunks={len(chunks)} vs "
+            f"embeddings={len(embeddings)}, skip.",
+            flush=True,
+        )
+        return 0
+
+    md = metadata or {}
+    rows = []
+    for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+        rows.append(
+            {
+                "paziente_id": paziente_id,
+                "medico_id": medico_id,
+                "source_type": source_type,
+                "source_id": source_id,
+                "chunk_index": i,
+                "content": chunk,
+                "embedding": emb,
+                "metadata": md,
+            }
+        )
+    try:
+        supabase.table("anamnesi_documenti").insert(rows).execute()
+        print(
+            f"[agent] indicizzati {len(rows)} chunk (source_type={source_type}, "
+            f"source_id={source_id}).",
+            flush=True,
+        )
+        return len(rows)
+    except Exception as e:
+        print(f"[agent] ERRORE index_document: {type(e).__name__}: {e}", flush=True)
+        traceback.print_exc()
+        return 0
+
+
+def retrieve_relevant_chunks(
+    paziente_id: str,
+    query: str,
+    top_k: int = RAG_TOP_K,
+    min_similarity: float = RAG_MIN_SIMILARITY,
+) -> list[dict]:
+    """
+    Similarity search via RPC `match_anamnesi_documenti`. Ritorna lista di dict
+    (id, source_type, content, similarity, ...). Empty list se non c'e' nulla
+    o se qualcosa fallisce.
+    """
+    if not supabase or not paziente_id:
+        return []
+    cleaned_query = (query or "").strip()
+    if len(cleaned_query) < RAG_MIN_QUERY_CHARS:
+        return []
+    query_emb = _embed_text(cleaned_query)
+    if not query_emb:
+        return []
+    try:
+        resp = supabase.rpc(
+            "match_anamnesi_documenti",
+            {
+                "query_embedding": query_emb,
+                "match_paziente_id": paziente_id,
+                "match_count": top_k,
+                "min_similarity": min_similarity,
+            },
+        ).execute()
+        return list(resp.data or [])
+    except Exception as e:
+        print(
+            f"[agent] ERRORE retrieve_relevant_chunks: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        traceback.print_exc()
+        return []
 
 
 # --------------------------- helper LLM (mockable) ---------------------------
@@ -294,6 +462,7 @@ def node_vision_ocr(state: AgentState) -> dict:
         "messages": [
             HumanMessage(content=f"[Referto allegato — OCR]\n{extracted_text}")
         ],
+        "needs_indexing": True,
     }
 
 
@@ -338,6 +507,102 @@ def node_whisper_transcribe(state: AgentState) -> dict:
             HumanMessage(content=f"[Vocale paziente — trascrizione]\n{transcript}")
         ],
     }
+
+
+def _last_human_text(messages: list[BaseMessage]) -> str:
+    """Estrae il testo dell'ultimo HumanMessage utile come query RAG."""
+    for m in reversed(messages or []):
+        if isinstance(m, HumanMessage):
+            content = m.content
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                # multi-part (vision): concatena le sole parti "text"
+                joined = " ".join(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ).strip()
+                if joined:
+                    return joined
+    return ""
+
+
+def node_retrieval(state: AgentState) -> dict:
+    """
+    RAG: cerca chunk rilevanti nella storia del paziente e li inietta come
+    SystemMessage nel contesto. No-op se non c'e' una query utile (es. primo
+    turno con storia vuota) o se la tabella anamnesi_documenti non e' ancora
+    popolata. Mai bloccante.
+    """
+    pid = state.get("paziente_id") or ""
+    messages = state.get("messages") or []
+    query = _last_human_text(messages)
+    if not pid or not query:
+        return {}
+
+    chunks = retrieve_relevant_chunks(pid, query)
+    if not chunks:
+        return {}
+
+    parts = []
+    for c in chunks:
+        sim = float(c.get("similarity") or 0.0)
+        st = c.get("source_type") or "?"
+        ts = c.get("created_at") or ""
+        content = c.get("content") or ""
+        parts.append(f"[{st} | sim={sim:.2f} | {ts}]\n{content}")
+    context_block = "\n\n".join(parts)
+
+    rag_msg = SystemMessage(
+        content=(
+            "Contesto storico paziente (recuperato via RAG, usalo SOLO se "
+            "clinicamente pertinente alla conversazione corrente, non ripeterlo "
+            "letteralmente al paziente):\n"
+            f"{context_block}"
+        )
+    )
+    print(
+        f"[agent] retrieval: {len(chunks)} chunk pertinenti per paziente={pid}.",
+        flush=True,
+    )
+    return {"messages": [rag_msg]}
+
+
+def node_embed_and_index(state: AgentState) -> dict:
+    """
+    Indicizza l'ultimo documento estratto (OCR / trascrizione) in
+    `anamnesi_documenti` per renderlo retrievable nei turni futuri. Si attiva
+    solo se il nodo a monte ha settato `needs_indexing=True`. Mai bloccante.
+    """
+    if not state.get("needs_indexing"):
+        return {}
+    pid = state.get("paziente_id") or ""
+    mid = state.get("medico_id") or ""
+    docs = state.get("extracted_docs") or []
+    msid = state.get("message_sid") or ""
+    if not pid or not mid or not docs:
+        return {"needs_indexing": False}
+
+    latest = docs[-1] or {}
+    text = (latest.get("extracted_text") or "").strip()
+    # Salta i marker di errore / placeholder che vision_ocr emette
+    skip_prefixes = ("[Errore", "[Referto PDF", "[Allegato non interpretabile", "[OCR vuoto")
+    if not text or text.startswith(skip_prefixes):
+        return {"needs_indexing": False}
+
+    index_document(
+        paziente_id=pid,
+        medico_id=mid,
+        source_type="referto_ocr",
+        source_id=msid or None,
+        text=text,
+        metadata={
+            "content_type": latest.get("content_type"),
+            "source_url": latest.get("source_url"),
+        },
+    )
+    return {"needs_indexing": False}
 
 
 def node_anamnesis_copilot(state: AgentState) -> dict:
@@ -407,6 +672,32 @@ def node_clinical_synthesizer(state: AgentState) -> dict:
         }
 
     synthesis_payload = synth.model_dump()
+
+    # Indicizza la sintesi per il RAG dei futuri turni / visite successive.
+    pid = state.get("paziente_id") or ""
+    mid = state.get("medico_id") or ""
+    msid = state.get("message_sid") or ""
+    if pid and mid:
+        synthesis_text = (
+            f"Chief complaint: {synth.chief_complaint}\n\n"
+            f"HPI: {synth.history_of_present_illness}\n\n"
+            f"Farmaci citati: {', '.join(synth.medications) if synth.medications else '-'}\n\n"
+            f"Red flags: {', '.join(synth.red_flags) if synth.red_flags else '-'}\n\n"
+            f"Urgenza: {synth.livello_urgenza}\n"
+            f"Sintesi: {synth.sintesi_medica}"
+        )
+        index_document(
+            paziente_id=pid,
+            medico_id=mid,
+            source_type="richiesta_sintesi",
+            source_id=msid or None,
+            text=synthesis_text,
+            metadata={
+                "livello_urgenza": synth.livello_urgenza,
+                "synthesized_at": _utcnow_iso(),
+            },
+        )
+
     closing_reply = (
         "Grazie. Ho preparato la sintesi per il medico, che ti rispondera' appena possibile."
     )
@@ -421,10 +712,27 @@ def node_clinical_synthesizer(state: AgentState) -> dict:
 # --------------------------- build graph ---------------------------
 
 def build_graph():
+    """
+    Topologia PR #4:
+
+        START -> input_router --cond--> { vision_ocr | whisper_transcribe | retrieval }
+        vision_ocr         -> retrieval
+        whisper_transcribe -> retrieval
+        retrieval          -> embed_and_index
+        embed_and_index    -> anamnesis_copilot
+        anamnesis_copilot --cond--> { END | clinical_synthesizer }
+        clinical_synthesizer -> END
+
+    `route_after_input` ritorna il valore "anamnesis_copilot" anche per la via
+    testo, ma la conditional edge lo mappa a "retrieval" (entry point della
+    pipeline RAG -> indexing -> copilot).
+    """
     g = StateGraph(AgentState)
     g.add_node("input_router", node_input_router)
     g.add_node("vision_ocr", node_vision_ocr)
     g.add_node("whisper_transcribe", node_whisper_transcribe)
+    g.add_node("retrieval", node_retrieval)
+    g.add_node("embed_and_index", node_embed_and_index)
     g.add_node("anamnesis_copilot", node_anamnesis_copilot)
     g.add_node("clinical_synthesizer", node_clinical_synthesizer)
 
@@ -435,11 +743,14 @@ def build_graph():
         {
             "vision_ocr": "vision_ocr",
             "whisper_transcribe": "whisper_transcribe",
-            "anamnesis_copilot": "anamnesis_copilot",
+            # via testo: salta direttamente alla pipeline RAG.
+            "anamnesis_copilot": "retrieval",
         },
     )
-    g.add_edge("vision_ocr", "anamnesis_copilot")
-    g.add_edge("whisper_transcribe", "anamnesis_copilot")
+    g.add_edge("vision_ocr", "retrieval")
+    g.add_edge("whisper_transcribe", "retrieval")
+    g.add_edge("retrieval", "embed_and_index")
+    g.add_edge("embed_and_index", "anamnesis_copilot")
     g.add_conditional_edges(
         "anamnesis_copilot",
         route_after_copilot,
@@ -589,6 +900,7 @@ def run_for_job(payload: dict) -> dict:
         "current_phase": session_state or "IDLE",
         "reply_to_send": None,
         "synthesis": None,
+        "needs_indexing": False,
         "last_error": None,
     }
 
