@@ -25,11 +25,17 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import agent
 from main import _process_message_impl, supabase
 
 POLL_INTERVAL_S: float = float(os.getenv("WORKER_POLL_INTERVAL_S", "2.0"))
 BACKOFF_BASE_S: float = float(os.getenv("WORKER_BACKOFF_BASE_S", "10.0"))
 BACKOFF_CAP_S: float = float(os.getenv("WORKER_BACKOFF_CAP_S", "3600.0"))
+
+# PR #3: per default i process_message vengono eseguiti dall'agent LangGraph.
+# Mettere a "1" per tornare al vecchio path sincrono di main.py (utile in
+# bootstrap / debug se l'agent ha problemi).
+USE_LEGACY_PIPELINE: bool = os.getenv("WORKER_USE_LEGACY", "0").strip() == "1"
 
 _should_stop = False
 
@@ -75,21 +81,36 @@ def _claim_next_job() -> dict | None:
 
 
 def _process_job(job: dict) -> None:
-    """Dispatch del job in base a `kind`. Solleva su errore (loop gestisce retry)."""
+    """
+    Dispatch del job in base a `kind`. Solleva su errore (loop gestisce retry).
+
+    PR #3: di default i `process_message` vanno all'agent LangGraph
+    (`agent.run_for_job`). Per debug si puo' tornare al vecchio path sincrono
+    impostando WORKER_USE_LEGACY=1.
+    """
     kind = job.get("kind") or "process_message"
     payload = job.get("payload") or {}
     if kind != "process_message":
         raise ValueError(f"job kind sconosciuto: {kind!r}")
 
-    _process_message_impl(
-        from_number=payload.get("from_number", "") or "",
-        body=payload.get("body", "") or "",
-        num_media=int(payload.get("num_media") or 0),
-        media_url_0=payload.get("media_url_0", "") or "",
-        media_content_type_0=payload.get("media_content_type_0", "") or "",
-        message_sid=payload.get("message_sid", "") or "",
-        profile_name=payload.get("profile_name", "") or "",
-    )
+    if USE_LEGACY_PIPELINE:
+        _process_message_impl(
+            from_number=payload.get("from_number", "") or "",
+            body=payload.get("body", "") or "",
+            num_media=int(payload.get("num_media") or 0),
+            media_url_0=payload.get("media_url_0", "") or "",
+            media_content_type_0=payload.get("media_content_type_0", "") or "",
+            message_sid=payload.get("message_sid", "") or "",
+            profile_name=payload.get("profile_name", "") or "",
+        )
+        return
+
+    summary = agent.run_for_job(payload)
+    print(f"[worker] agent summary: {summary}", flush=True)
+    if summary.get("status") == "error":
+        raise RuntimeError(
+            f"agent.run_for_job ha riportato status=error: {summary.get('reason')}"
+        )
 
 
 def _mark_done(job_id: str) -> None:

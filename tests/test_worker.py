@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import agent  # noqa: E402
 import main  # noqa: E402
 import worker  # noqa: E402
 
@@ -78,18 +79,57 @@ def test_claim_returns_first_row(supa_mock: MagicMock) -> None:
     assert worker._claim_next_job() == job
 
 
-def test_process_job_calls_impl_with_payload(
+def test_process_job_calls_agent_run_for_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mock_impl = MagicMock()
-    monkeypatch.setattr(worker, "_process_message_impl", mock_impl)
+    """PR #3: di default i job passano per agent.run_for_job, non per il legacy impl."""
+    mock_run = MagicMock(return_value={"status": "ok", "phase": "COLLECTING_ANAMNESIS"})
+    mock_legacy = MagicMock()
+    monkeypatch.setattr(agent, "run_for_job", mock_run)
+    monkeypatch.setattr(worker.agent, "run_for_job", mock_run)
+    monkeypatch.setattr(worker, "_process_message_impl", mock_legacy)
+    monkeypatch.setattr(worker, "USE_LEGACY_PIPELINE", False)
+
     worker._process_job(_build_job())
-    mock_impl.assert_called_once()
-    kw = mock_impl.call_args.kwargs
-    assert kw["from_number"] == "+393331234567"
+
+    mock_run.assert_called_once()
+    payload = mock_run.call_args.args[0]
+    assert payload["body"] == "Ho mal di testa"
+    assert payload["from_number"] == "+393331234567"
+    assert mock_legacy.call_count == 0
+
+
+def test_process_job_raises_on_agent_error_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Se l'agent ritorna status='error', il worker deve sollevare (retry/dead-letter)."""
+    monkeypatch.setattr(
+        worker.agent,
+        "run_for_job",
+        MagicMock(return_value={"status": "error", "reason": "paziente_not_found"}),
+    )
+    monkeypatch.setattr(worker, "USE_LEGACY_PIPELINE", False)
+
+    with pytest.raises(RuntimeError):
+        worker._process_job(_build_job())
+
+
+def test_process_job_legacy_path_when_flag_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WORKER_USE_LEGACY=1 ripristina il path sincrono di main._process_message_impl."""
+    mock_legacy = MagicMock()
+    mock_agent = MagicMock()
+    monkeypatch.setattr(worker, "_process_message_impl", mock_legacy)
+    monkeypatch.setattr(worker.agent, "run_for_job", mock_agent)
+    monkeypatch.setattr(worker, "USE_LEGACY_PIPELINE", True)
+
+    worker._process_job(_build_job())
+
+    mock_legacy.assert_called_once()
+    kw = mock_legacy.call_args.kwargs
     assert kw["body"] == "Ho mal di testa"
-    assert kw["message_sid"] == "SM_TEST_001"
-    assert kw["num_media"] == 0
+    assert mock_agent.call_count == 0
 
 
 def test_process_job_raises_on_unknown_kind() -> None:
@@ -143,8 +183,9 @@ def test_main_loop_processes_one_job_and_stops(
 
     supa_mock.rpc.return_value.execute.side_effect = fake_rpc_execute
 
-    mock_impl = MagicMock()
-    monkeypatch.setattr(worker, "_process_message_impl", mock_impl)
+    mock_impl = MagicMock(return_value={"status": "ok", "phase": "COLLECTING_ANAMNESIS"})
+    monkeypatch.setattr(worker.agent, "run_for_job", mock_impl)
+    monkeypatch.setattr(worker, "USE_LEGACY_PIPELINE", False)
 
     def fake_sleep(_seconds: float) -> None:
         worker._should_stop = True
