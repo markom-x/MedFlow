@@ -691,3 +691,114 @@ def test_run_for_job_text_path_invokes_retrieval_and_injects_context(
     ]
     assert len(rag_systems) == 1
     assert "cefalea ricorrente" in rag_systems[0].content
+
+
+# --------------------------- consultazione fascicolo (RAG medico-facing) ---------------------------
+
+def test_answer_fascicolo_query_short_query_no_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_retrieve = MagicMock()
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", mock_retrieve)
+    out = agent.answer_fascicolo_query(PAZIENTE_ID, "hb?")
+    assert out["sources"] == []
+    assert "specifica" in out["answer"].lower()
+    mock_retrieve.assert_not_called()
+
+
+def test_answer_fascicolo_query_no_chunks_returns_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
+    mock_llm = MagicMock()
+    monkeypatch.setattr(agent, "_generate_fascicolo_answer", mock_llm)
+
+    out = agent.answer_fascicolo_query(PAZIENTE_ID, "qual e' l'ultimo valore di emoglobina?")
+    assert out["sources"] == []
+    assert "fascicolo" in out["answer"].lower()
+    # Niente chiamata LLM se non c'e' contesto.
+    mock_llm.assert_not_called()
+
+
+def test_answer_fascicolo_query_grounds_on_chunks_and_returns_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_retrieve = MagicMock(
+        return_value=[
+            {
+                "source_type": "referto_ocr",
+                "source_id": "SM_OCR_1",
+                "content": "Emoglobina 12.4 g/dL (v.n. 13-17)",
+                "similarity": 0.81,
+                "created_at": "2026-05-01T10:00:00Z",
+            },
+            {
+                "source_type": "richiesta_sintesi",
+                "source_id": "SM_FIN_2",
+                "content": "Anemia lieve in follow-up.",
+                "similarity": 0.62,
+                "created_at": "2026-04-01T10:00:00Z",
+            },
+        ]
+    )
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", mock_retrieve)
+
+    captured: dict = {}
+
+    def fake_answer(messages):
+        captured["msgs"] = messages
+        return "Ultima emoglobina: 12.4 g/dL (sotto il valore minimo)."
+
+    monkeypatch.setattr(agent, "_generate_fascicolo_answer", fake_answer)
+
+    out = agent.answer_fascicolo_query(
+        PAZIENTE_ID, "qual e' l'ultimo valore di emoglobina?"
+    )
+
+    assert out["answer"].startswith("Ultima emoglobina")
+    assert len(out["sources"]) == 2
+    assert out["sources"][0]["source_type"] == "referto_ocr"
+    assert out["sources"][0]["source_id"] == "SM_OCR_1"
+    assert out["sources"][0]["similarity"] == pytest.approx(0.81)
+
+    # Il fascicolo usa knob piu' permissivi del RAG interno.
+    rpc_kwargs = mock_retrieve.call_args.kwargs
+    assert rpc_kwargs["top_k"] == agent.FASCICOLO_TOP_K
+    assert rpc_kwargs["min_similarity"] == agent.FASCICOLO_MIN_SIMILARITY
+
+    # Il contesto dei chunk e' iniettato nei messaggi LLM (grounding).
+    from langchain_core.messages import HumanMessage as HM, SystemMessage as SM
+
+    assert isinstance(captured["msgs"][0], SM)
+    human = next(m for m in captured["msgs"] if isinstance(m, HM))
+    assert "Emoglobina 12.4" in human.content
+    assert "emoglobina" in human.content.lower()
+
+
+def test_answer_fascicolo_query_llm_error_is_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        agent,
+        "retrieve_relevant_chunks",
+        MagicMock(
+            return_value=[
+                {
+                    "source_type": "referto_ocr",
+                    "content": "Emoglobina 12.4",
+                    "similarity": 0.8,
+                    "created_at": "2026-05-01T10:00:00Z",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_generate_fascicolo_answer",
+        MagicMock(side_effect=RuntimeError("LLM down")),
+    )
+
+    out = agent.answer_fascicolo_query(PAZIENTE_ID, "una domanda abbastanza lunga")
+    assert out["sources"] == []
+    assert out["error"] == "RuntimeError"
+    assert "errore" in out["answer"].lower()

@@ -3,6 +3,7 @@
 import { Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatSection } from "@/components/dashboard/chat-section";
+import { FascicoloQuery } from "@/components/dashboard/fascicolo-query";
 import { PatientPrivateNotes } from "@/components/dashboard/patient-private-notes";
 import { RecapSection } from "@/components/dashboard/recap-section";
 import type { PatientProfile, RichiestaRow } from "@/lib/dashboard/types";
@@ -116,6 +117,7 @@ export function PatientMainArea({
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-8">
             <div className="mx-auto flex max-w-3xl flex-col gap-6 md:gap-10">
+              <FascicoloQuery pazienteId={profile.id} />
               <PatientPrivateNotes
                 pazienteId={profile.id}
                 initialNote={profile.notePrivate}

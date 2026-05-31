@@ -13,9 +13,10 @@ from urllib.parse import unquote
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Header, HTTPException
 from fastapi.responses import Response
 from openai import OpenAI
+from pydantic import BaseModel
 from supabase import Client, create_client
 from twilio.rest import Client as TwilioClient
 
@@ -1491,4 +1492,55 @@ def twilio_webhook(
         )
     print("[webhook] Risposta TwiML 200 (routing standard completato).", flush=True)
     return Response(content=twiml, media_type="application/xml")
+
+
+# --------------------------- API consultazione fascicolo (RAG medico-facing) ---------------------------
+
+# Token opzionale per autenticare le chiamate server-to-server dalla dashboard.
+# Se non impostato (es. dev locale) l'endpoint non richiede autenticazione.
+MEDFLOW_INTERNAL_TOKEN = os.getenv("MEDFLOW_INTERNAL_TOKEN")
+
+
+class FascicoloQueryRequest(BaseModel):
+    paziente_id: str
+    query: str
+
+
+@app.post("/api/fascicolo/query")
+def fascicolo_query(
+    req: FascicoloQueryRequest,
+    x_medflow_token: str = Header(default=""),
+) -> dict:
+    """
+    Interrogazione in linguaggio naturale del fascicolo del paziente (RAG).
+    Pensato per essere chiamato server-side dalla dashboard del medico.
+
+    Se MEDFLOW_INTERNAL_TOKEN e' configurato, richiede l'header `X-MedFlow-Token`
+    corrispondente; altrimenti (dev) e' aperto. Riusa il motore RAG dell'agent.
+    """
+    if MEDFLOW_INTERNAL_TOKEN and not secrets.compare_digest(
+        x_medflow_token or "", MEDFLOW_INTERNAL_TOKEN
+    ):
+        raise HTTPException(status_code=401, detail="Token interno non valido.")
+
+    paziente_id = (req.paziente_id or "").strip()
+    query = (req.query or "").strip()
+    if not paziente_id or not query:
+        raise HTTPException(
+            status_code=400, detail="paziente_id e query sono obbligatori."
+        )
+
+    # Import lazy: `agent` importa `main` a module-load, importarlo qui evita il
+    # ciclo (a runtime `main` e' gia' inizializzato).
+    import agent
+
+    try:
+        result = agent.answer_fascicolo_query(paziente_id, query)
+    except Exception as e:
+        print(f"[api] ERRORE fascicolo_query: {type(e).__name__}: {e}", flush=True)
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, detail="Errore interno durante la consultazione."
+        )
+    return result
 

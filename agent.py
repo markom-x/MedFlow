@@ -84,6 +84,12 @@ RAG_TOP_K = int(os.getenv("MEDFLOW_RAG_TOP_K", "5"))
 RAG_MIN_SIMILARITY = float(os.getenv("MEDFLOW_RAG_MIN_SIMILARITY", "0.5"))
 RAG_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_RAG_MIN_QUERY_CHARS", "8"))
 
+# Consultazione del fascicolo lato medico (interrogazione in linguaggio naturale).
+# Soglia piu' permissiva e top_k piu' alto rispetto al RAG interno dell'anamnesi:
+# qui il medico fa query mirate e vogliamo recuperare piu' contesto pertinente.
+FASCICOLO_TOP_K = int(os.getenv("MEDFLOW_FASCICOLO_TOP_K", "8"))
+FASCICOLO_MIN_SIMILARITY = float(os.getenv("MEDFLOW_FASCICOLO_MIN_SIMILARITY", "0.3"))
+
 ANAMNESIS_SYSTEM_PROMPT = """Sei un assistente medico che conduce un'anamnesi pre-visita
 per conto di un Medico di Medicina Generale. Parli al paziente via WhatsApp in italiano,
 in modo empatico, chiaro e professionale. Non sei il medico: non diagnostichi e non prescrivi.
@@ -119,6 +125,21 @@ Schema rigoroso (la dashboard del medico legge questi campi):
 - sintesi_medica: 1-2 frasi clinico-sintetiche, max 30 parole.
 
 Non includere PII (nome, cognome, telefono) nella sintesi.
+""".strip()
+
+
+FASCICOLO_QA_SYSTEM_PROMPT = """Sei l'assistente di consultazione del fascicolo clinico di MedFlow.
+Un medico ti fa una domanda sul paziente: rispondi USANDO ESCLUSIVAMENTE gli estratti del
+fascicolo che ti vengono forniti (referti OCR, sintesi di visite precedenti, note).
+
+Regole:
+- Non inventare e non usare conoscenza esterna al fascicolo. Se gli estratti non contengono
+  la risposta, dillo chiaramente ("Non risulta nel fascicolo del paziente.").
+- Riporta i valori e le frasi rilevanti cosi' come compaiono nel fascicolo (es. valori di
+  laboratorio con la loro unita' e data, se presente).
+- Rispondi in italiano, conciso e clinico, senza preamboli.
+- Sei uno strumento di consultazione: non formulare diagnosi nuove ne' prescrizioni, supporti
+  il giudizio del medico.
 """.strip()
 
 
@@ -340,6 +361,98 @@ def retrieve_relevant_chunks(
         )
         traceback.print_exc()
         return []
+
+
+def _generate_fascicolo_answer(messages: list[BaseMessage]) -> str:
+    """Wrapper isolato (testabile) per la risposta in linguaggio naturale sul
+    fascicolo. Output testo libero, non structured output."""
+    llm = _get_chat_llm(temperature=0.0)
+    resp = llm.invoke(messages)
+    text = getattr(resp, "content", "")
+    if isinstance(text, list):
+        text = " ".join(
+            part.get("text", "") for part in text if isinstance(part, dict)
+        )
+    return (text or "").strip()
+
+
+def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
+    """
+    Consultazione del fascicolo lato medico: data una domanda in linguaggio
+    naturale, recupera i chunk pertinenti del paziente via RAG e produce una
+    risposta ancorata SOLO a quel contesto, con l'elenco delle fonti.
+
+    Ritorna sempre un dict serializzabile: {"answer": str, "sources": list[dict]}.
+    Mai solleva: errori -> messaggio fallback + sources vuoto.
+    """
+    cleaned = (query or "").strip()
+    if not paziente_id or len(cleaned) < RAG_MIN_QUERY_CHARS:
+        return {
+            "answer": "Inserisci una domanda piu' specifica per interrogare il fascicolo.",
+            "sources": [],
+        }
+
+    chunks = retrieve_relevant_chunks(
+        paziente_id,
+        cleaned,
+        top_k=FASCICOLO_TOP_K,
+        min_similarity=FASCICOLO_MIN_SIMILARITY,
+    )
+    if not chunks:
+        return {
+            "answer": (
+                "Non ho trovato nulla nel fascicolo del paziente che risponda a questa "
+                "domanda. Potrebbe non essere ancora stato indicizzato un documento pertinente."
+            ),
+            "sources": [],
+        }
+
+    context_parts = []
+    for i, c in enumerate(chunks, start=1):
+        st = c.get("source_type") or "?"
+        ts = c.get("created_at") or ""
+        content = c.get("content") or ""
+        context_parts.append(f"[Fonte {i} | {st} | {ts}]\n{content}")
+    context_block = "\n\n".join(context_parts)
+
+    messages: list[BaseMessage] = [
+        SystemMessage(content=FASCICOLO_QA_SYSTEM_PROMPT),
+        HumanMessage(
+            content=(
+                f"Domanda del medico:\n{cleaned}\n\n"
+                f"Estratti dal fascicolo del paziente:\n{context_block}"
+            )
+        ),
+    ]
+
+    try:
+        answer = _generate_fascicolo_answer(messages)
+    except Exception as e:
+        print(
+            f"[agent] ERRORE answer_fascicolo_query: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        traceback.print_exc()
+        return {
+            "answer": "Errore tecnico durante la consultazione del fascicolo. Riprova.",
+            "sources": [],
+            "error": type(e).__name__,
+        }
+
+    if not answer:
+        answer = "Non sono riuscito a formulare una risposta dal fascicolo."
+
+    sources = [
+        {
+            "source_type": c.get("source_type"),
+            "source_id": c.get("source_id"),
+            "similarity": round(float(c.get("similarity") or 0.0), 3),
+            "created_at": c.get("created_at"),
+            "content": c.get("content"),
+        }
+        for c in chunks
+    ]
+    return {"answer": answer, "sources": sources}
 
 
 # --------------------------- helper LLM (mockable) ---------------------------
