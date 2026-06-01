@@ -455,6 +455,252 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
     return {"answer": answer, "sources": sources}
 
 
+# --------------------------- backfill: indicizza l'intero fascicolo ---------------------------
+
+def _already_indexed_source_ids(paziente_id: str, source_type: str) -> set[str]:
+    """source_id gia' presenti in anamnesi_documenti per (paziente, source_type).
+    Rende il backfill idempotente: non re-indicizza cio' che c'e' gia'."""
+    if not supabase or not paziente_id:
+        return set()
+    try:
+        resp = (
+            supabase.table("anamnesi_documenti")
+            .select("source_id")
+            .eq("paziente_id", paziente_id)
+            .eq("source_type", source_type)
+            .execute()
+        )
+        return {r["source_id"] for r in (resp.data or []) if r.get("source_id")}
+    except Exception as e:
+        print(
+            f"[agent] ERRORE _already_indexed_source_ids: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        return set()
+
+
+def _richiesta_to_text(row: dict) -> str:
+    """Testo indicizzabile a partire da una riga `richieste`."""
+    parts: list[str] = []
+    summ = (row.get("riassunto_clinico") or "").strip()
+    msg = (row.get("messaggio_originale") or "").strip()
+    urg = (row.get("urgenza") or "").strip()
+    if summ:
+        parts.append(f"Sintesi clinica: {summ}")
+    if msg:
+        parts.append(f"Messaggio: {msg}")
+    if urg:
+        parts.append(f"Urgenza: {urg}")
+    return "\n".join(parts).strip()
+
+
+def backfill_fascicolo(paziente_id: str | None = None) -> dict:
+    """
+    Indicizza in `anamnesi_documenti` tutto il contenuto testuale gia' presente
+    in `richieste` e `conversazioni`, cosi' la consultazione del fascicolo lato
+    medico puo' "raggiungere" la storia esistente (non solo referti/sintesi
+    prodotti dall'agent in avanti).
+
+    - Idempotente: salta i source_id gia' indicizzati per quel paziente.
+    - Se `paziente_id` e' None processa tutti i pazienti.
+    - Best-effort: gli errori sono loggati, non sollevati.
+
+    Ritorna statistiche di sintesi.
+    """
+    stats = {
+        "richieste_indicizzate": 0,
+        "conversazioni_indicizzate": 0,
+        "chunk": 0,
+        "saltate": 0,
+    }
+    if not supabase:
+        stats["error"] = "supabase_non_configurato"
+        return stats
+
+    # ----- richieste -----
+    try:
+        q = supabase.table("richieste").select(
+            "id, paziente_id, medico_id, messaggio_originale, riassunto_clinico, "
+            "urgenza, created_at"
+        )
+        if paziente_id:
+            q = q.eq("paziente_id", paziente_id)
+        richieste = q.execute().data or []
+    except Exception as e:
+        print(f"[agent] ERRORE backfill select richieste: {e}", flush=True)
+        richieste = []
+
+    seen_ric: dict[str, set[str]] = {}
+    for row in richieste:
+        pid = str(row.get("paziente_id") or "")
+        mid = str(row.get("medico_id") or "")
+        rid = str(row.get("id") or "")
+        if not pid or not mid or not rid:
+            continue
+        if pid not in seen_ric:
+            seen_ric[pid] = _already_indexed_source_ids(pid, "richiesta_sintesi")
+        if rid in seen_ric[pid]:
+            stats["saltate"] += 1
+            continue
+        text = _richiesta_to_text(row)
+        if not text:
+            continue
+        n = index_document(
+            paziente_id=pid,
+            medico_id=mid,
+            source_type="richiesta_sintesi",
+            source_id=rid,
+            text=text,
+            metadata={
+                "backfill": True,
+                "origine": "richieste",
+                "urgenza": row.get("urgenza"),
+                "created_at": row.get("created_at"),
+            },
+        )
+        if n:
+            stats["richieste_indicizzate"] += 1
+            stats["chunk"] += n
+            seen_ric[pid].add(rid)
+
+    # ----- conversazioni -----
+    try:
+        q = supabase.table("conversazioni").select(
+            "id, paziente_id, medico_id, role, content, created_at"
+        )
+        if paziente_id:
+            q = q.eq("paziente_id", paziente_id)
+        conversazioni = q.execute().data or []
+    except Exception as e:
+        print(f"[agent] ERRORE backfill select conversazioni: {e}", flush=True)
+        conversazioni = []
+
+    seen_conv: dict[str, set[str]] = {}
+    for row in conversazioni:
+        pid = str(row.get("paziente_id") or "")
+        mid = str(row.get("medico_id") or "")
+        cid = str(row.get("id") or "")
+        content = (row.get("content") or "").strip()
+        if not pid or not mid or not cid or not content:
+            continue
+        if pid not in seen_conv:
+            seen_conv[pid] = _already_indexed_source_ids(pid, "conversazione")
+        if cid in seen_conv[pid]:
+            stats["saltate"] += 1
+            continue
+        role = row.get("role") or "?"
+        n = index_document(
+            paziente_id=pid,
+            medico_id=mid,
+            source_type="conversazione",
+            source_id=cid,
+            text=f"[{role}] {content}",
+            metadata={
+                "backfill": True,
+                "origine": "conversazioni",
+                "role": role,
+                "created_at": row.get("created_at"),
+            },
+        )
+        if n:
+            stats["conversazioni_indicizzate"] += 1
+            stats["chunk"] += n
+            seen_conv[pid].add(cid)
+
+    print(f"[agent] backfill_fascicolo completato: {stats}", flush=True)
+    return stats
+
+
+def index_job(payload: dict) -> dict:
+    """
+    Indicizzazione automatica di una singola riga, innescata da un trigger DB che
+    accoda un job `index_document` su `public.jobs` ad ogni INSERT su
+    `richieste`/`conversazioni`. Consumato dal worker.
+
+    Payload atteso: {source_table, source_id, paziente_id, medico_id}.
+    Idempotente: salta se il source_id e' gia' indicizzato. Best-effort: ritorna
+    un dict di esito, e solleva solo via worker se status == 'error'.
+    """
+    if not supabase:
+        return {"status": "error", "reason": "supabase_non_configurato"}
+
+    source_table = (payload.get("source_table") or "").strip()
+    source_id = str(payload.get("source_id") or "").strip()
+    paziente_id = str(payload.get("paziente_id") or "").strip()
+    if not source_table or not source_id or not paziente_id:
+        return {"status": "error", "reason": "payload_incompleto"}
+
+    if source_table == "richieste":
+        source_type = "richiesta_sintesi"
+    elif source_table == "conversazioni":
+        source_type = "conversazione"
+    else:
+        return {"status": "error", "reason": f"source_table_sconosciuta:{source_table}"}
+
+    # Idempotenza: non re-indicizzare.
+    if source_id in _already_indexed_source_ids(paziente_id, source_type):
+        return {"status": "skipped", "reason": "gia_indicizzato", "source_id": source_id}
+
+    try:
+        resp = (
+            supabase.table(source_table)
+            .select("*")
+            .eq("id", source_id)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        print(f"[agent] ERRORE index_job fetch {source_table}: {e}", flush=True)
+        traceback.print_exc()
+        return {"status": "error", "reason": "fetch_failed"}
+
+    if not rows:
+        return {"status": "error", "reason": "row_non_trovata", "source_id": source_id}
+    row = rows[0]
+    mid = str(row.get("medico_id") or "")
+    if not mid:
+        return {"status": "error", "reason": "medico_id_mancante", "source_id": source_id}
+
+    if source_table == "richieste":
+        text = _richiesta_to_text(row)
+        metadata = {
+            "origine": "richieste",
+            "urgenza": row.get("urgenza"),
+            "created_at": row.get("created_at"),
+        }
+    else:  # conversazioni
+        content = (row.get("content") or "").strip()
+        if not content:
+            return {"status": "skipped", "reason": "content_vuoto", "source_id": source_id}
+        role = row.get("role") or "?"
+        text = f"[{role}] {content}"
+        metadata = {
+            "origine": "conversazioni",
+            "role": role,
+            "created_at": row.get("created_at"),
+        }
+
+    if not text:
+        return {"status": "skipped", "reason": "testo_vuoto", "source_id": source_id}
+
+    n = index_document(
+        paziente_id=paziente_id,
+        medico_id=mid,
+        source_type=source_type,
+        source_id=source_id,
+        text=text,
+        metadata=metadata,
+    )
+    return {
+        "status": "ok" if n else "error",
+        "reason": None if n else "index_document_zero_chunk",
+        "chunk": n,
+        "source_id": source_id,
+        "source_type": source_type,
+    }
+
+
 # --------------------------- helper LLM (mockable) ---------------------------
 
 def _get_chat_llm(temperature: float = 0.2) -> ChatOpenAI:

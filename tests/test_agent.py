@@ -802,3 +802,262 @@ def test_answer_fascicolo_query_llm_error_is_safe(
     assert out["sources"] == []
     assert out["error"] == "RuntimeError"
     assert "errore" in out["answer"].lower()
+
+
+# --------------------------- backfill_fascicolo ---------------------------
+
+def test_richiesta_to_text_composes_fields() -> None:
+    text = agent._richiesta_to_text(
+        {
+            "riassunto_clinico": "Cefalea muscolo-tensiva",
+            "messaggio_originale": "Ho mal di testa e un po' di febbre",
+            "urgenza": "bassa",
+        }
+    )
+    assert "Sintesi clinica: Cefalea" in text
+    assert "Messaggio: Ho mal di testa" in text
+    assert "Urgenza: bassa" in text
+
+
+def _table_router(rows_by_table: dict[str, list[dict]]):
+    """Costruisce una side_effect per supabase.table() che ritorna builder
+    distinti per tabella, supportando il chaining .select(...).eq(...).execute()."""
+
+    def factory(name: str):
+        tbl = MagicMock(name=f"table_{name}")
+        data = rows_by_table.get(name, [])
+        # .select(...).execute().data  e  .select(...).eq(...).execute().data
+        select_builder = tbl.select.return_value
+        select_builder.execute.return_value.data = data
+        select_builder.eq.return_value.execute.return_value.data = data
+        select_builder.eq.return_value.eq.return_value.execute.return_value.data = data
+        return tbl
+
+    return factory
+
+
+def test_backfill_indexes_richieste_and_conversazioni(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        agent, "_already_indexed_source_ids", MagicMock(return_value=set())
+    )
+    mock_index = MagicMock(return_value=1)
+    monkeypatch.setattr(agent, "index_document", mock_index)
+
+    supa_mock.table.side_effect = _table_router(
+        {
+            "richieste": [
+                {
+                    "id": "ric-1",
+                    "paziente_id": PAZIENTE_ID,
+                    "medico_id": MEDICO_ID,
+                    "messaggio_originale": "Ho febbre a 38.5 da ieri",
+                    "riassunto_clinico": "Stato febbrile",
+                    "urgenza": "media",
+                    "created_at": "2026-05-30T10:00:00Z",
+                }
+            ],
+            "conversazioni": [
+                {
+                    "id": "conv-1",
+                    "paziente_id": PAZIENTE_ID,
+                    "medico_id": MEDICO_ID,
+                    "role": "user",
+                    "content": "La temperatura stamattina era 37.8",
+                    "created_at": "2026-05-30T11:00:00Z",
+                }
+            ],
+        }
+    )
+
+    stats = agent.backfill_fascicolo()
+
+    assert stats["richieste_indicizzate"] == 1
+    assert stats["conversazioni_indicizzate"] == 1
+    assert stats["chunk"] == 2
+
+    calls = {c.kwargs["source_type"]: c.kwargs for c in mock_index.call_args_list}
+    assert calls["richiesta_sintesi"]["source_id"] == "ric-1"
+    assert "febbre" in calls["richiesta_sintesi"]["text"].lower()
+    assert calls["conversazione"]["source_id"] == "conv-1"
+    assert "temperatura" in calls["conversazione"]["text"].lower()
+
+
+def test_backfill_skips_already_indexed(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ric-1 gia' indicizzata -> deve essere saltata.
+    monkeypatch.setattr(
+        agent,
+        "_already_indexed_source_ids",
+        MagicMock(side_effect=lambda pid, st: {"ric-1"} if st == "richiesta_sintesi" else set()),
+    )
+    mock_index = MagicMock(return_value=1)
+    monkeypatch.setattr(agent, "index_document", mock_index)
+
+    supa_mock.table.side_effect = _table_router(
+        {
+            "richieste": [
+                {
+                    "id": "ric-1",
+                    "paziente_id": PAZIENTE_ID,
+                    "medico_id": MEDICO_ID,
+                    "messaggio_originale": "x",
+                    "riassunto_clinico": "y",
+                    "urgenza": "bassa",
+                }
+            ],
+            "conversazioni": [],
+        }
+    )
+
+    stats = agent.backfill_fascicolo(PAZIENTE_ID)
+    assert stats["richieste_indicizzate"] == 0
+    assert stats["saltate"] == 1
+    mock_index.assert_not_called()
+
+
+def test_backfill_no_supabase_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent, "supabase", None)
+    stats = agent.backfill_fascicolo()
+    assert stats.get("error") == "supabase_non_configurato"
+
+
+# --------------------------- index_job (indicizzazione automatica via trigger) ---------------------------
+
+def _single_row_table(row: dict | None):
+    """side_effect per supabase.table() che ritorna .select(*).eq(id).limit(1).execute().data."""
+
+    def factory(_name: str):
+        tbl = MagicMock()
+        tbl.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = (
+            [row] if row else []
+        )
+        return tbl
+
+    return factory
+
+
+def test_index_job_richiesta_indexes_row(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        agent, "_already_indexed_source_ids", MagicMock(return_value=set())
+    )
+    mock_index = MagicMock(return_value=1)
+    monkeypatch.setattr(agent, "index_document", mock_index)
+    supa_mock.table.side_effect = _single_row_table(
+        {
+            "id": "ric-1",
+            "paziente_id": PAZIENTE_ID,
+            "medico_id": MEDICO_ID,
+            "messaggio_originale": "Ho febbre a 39",
+            "riassunto_clinico": "Stato febbrile",
+            "urgenza": "alta",
+        }
+    )
+
+    out = agent.index_job(
+        {
+            "source_table": "richieste",
+            "source_id": "ric-1",
+            "paziente_id": PAZIENTE_ID,
+            "medico_id": MEDICO_ID,
+        }
+    )
+    assert out["status"] == "ok"
+    assert out["source_type"] == "richiesta_sintesi"
+    kw = mock_index.call_args.kwargs
+    assert kw["source_id"] == "ric-1"
+    assert "febbre" in kw["text"].lower()
+
+
+def test_index_job_conversazione_indexes_with_role(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        agent, "_already_indexed_source_ids", MagicMock(return_value=set())
+    )
+    mock_index = MagicMock(return_value=1)
+    monkeypatch.setattr(agent, "index_document", mock_index)
+    supa_mock.table.side_effect = _single_row_table(
+        {
+            "id": "conv-1",
+            "paziente_id": PAZIENTE_ID,
+            "medico_id": MEDICO_ID,
+            "role": "user",
+            "content": "La temperatura era 37.9",
+        }
+    )
+
+    out = agent.index_job(
+        {
+            "source_table": "conversazioni",
+            "source_id": "conv-1",
+            "paziente_id": PAZIENTE_ID,
+            "medico_id": MEDICO_ID,
+        }
+    )
+    assert out["status"] == "ok"
+    assert out["source_type"] == "conversazione"
+    assert "[user]" in mock_index.call_args.kwargs["text"]
+
+
+def test_index_job_skips_when_already_indexed(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        agent, "_already_indexed_source_ids", MagicMock(return_value={"ric-1"})
+    )
+    mock_index = MagicMock()
+    monkeypatch.setattr(agent, "index_document", mock_index)
+
+    out = agent.index_job(
+        {
+            "source_table": "richieste",
+            "source_id": "ric-1",
+            "paziente_id": PAZIENTE_ID,
+            "medico_id": MEDICO_ID,
+        }
+    )
+    assert out["status"] == "skipped"
+    mock_index.assert_not_called()
+
+
+def test_index_job_unknown_table_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    out = agent.index_job(
+        {
+            "source_table": "pazienti",
+            "source_id": "x",
+            "paziente_id": PAZIENTE_ID,
+            "medico_id": MEDICO_ID,
+        }
+    )
+    assert out["status"] == "error"
+    assert "source_table_sconosciuta" in out["reason"]
+
+
+def test_index_job_incomplete_payload_errors() -> None:
+    out = agent.index_job({"source_table": "richieste"})
+    assert out["status"] == "error"
+    assert out["reason"] == "payload_incompleto"
+
+
+def test_index_job_row_not_found_errors(
+    supa_mock: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        agent, "_already_indexed_source_ids", MagicMock(return_value=set())
+    )
+    supa_mock.table.side_effect = _single_row_table(None)
+    out = agent.index_job(
+        {
+            "source_table": "richieste",
+            "source_id": "ghost",
+            "paziente_id": PAZIENTE_ID,
+            "medico_id": MEDICO_ID,
+        }
+    )
+    assert out["status"] == "error"
+    assert out["reason"] == "row_non_trovata"

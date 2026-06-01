@@ -90,6 +90,19 @@ def _process_job(job: dict) -> None:
     """
     kind = job.get("kind") or "process_message"
     payload = job.get("payload") or {}
+
+    # PR #5: indicizzazione automatica del fascicolo. I trigger DB su
+    # richieste/conversazioni accodano job `index_document`; qui li indicizziamo
+    # via RAG. Idempotente lato agent (salta cio' che e' gia' indicizzato).
+    if kind == "index_document":
+        summary = agent.index_job(payload)
+        print(f"[worker] index summary: {summary}", flush=True)
+        if summary.get("status") == "error":
+            raise RuntimeError(
+                f"agent.index_job ha riportato status=error: {summary.get('reason')}"
+            )
+        return
+
     if kind != "process_message":
         raise ValueError(f"job kind sconosciuto: {kind!r}")
 

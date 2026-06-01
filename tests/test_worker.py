@@ -137,6 +137,43 @@ def test_process_job_raises_on_unknown_kind() -> None:
         worker._process_job(_build_job(kind="other"))
 
 
+def test_process_job_dispatches_index_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #5: i job index_document vanno ad agent.index_job, non a run_for_job."""
+    mock_index = MagicMock(return_value={"status": "ok", "chunk": 1})
+    mock_run = MagicMock()
+    monkeypatch.setattr(worker.agent, "index_job", mock_index)
+    monkeypatch.setattr(worker.agent, "run_for_job", mock_run)
+
+    job = _build_job(
+        kind="index_document",
+        payload={
+            "source_table": "richieste",
+            "source_id": "ric-1",
+            "paziente_id": "pid-1",
+            "medico_id": "mid-1",
+        },
+    )
+    worker._process_job(job)
+
+    mock_index.assert_called_once()
+    assert mock_index.call_args.args[0]["source_table"] == "richieste"
+    assert mock_run.call_count == 0
+
+
+def test_process_job_index_document_raises_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        worker.agent,
+        "index_job",
+        MagicMock(return_value={"status": "error", "reason": "row_non_trovata"}),
+    )
+    with pytest.raises(RuntimeError):
+        worker._process_job(_build_job(kind="index_document", payload={}))
+
+
 def test_mark_done_updates_status(supa_mock: MagicMock) -> None:
     worker._mark_done("job-abc")
     update_call = supa_mock.table.return_value.update
