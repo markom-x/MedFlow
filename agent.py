@@ -53,6 +53,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
+import channels
 from main import (
     download_twilio_media_requests,
     get_paziente_by_phone,
@@ -64,7 +65,6 @@ from main import (
     upload_file_bytes_to_storage,
     _log_conversation_turn,
     _normalize_content_type,
-    _send_whatsapp_reply_and_log,
     _storage_relative_path,
 )
 
@@ -1290,17 +1290,15 @@ def run_for_job(payload: dict) -> dict:
 
     sent_reply = False
     if reply:
-        try:
-            _send_whatsapp_reply_and_log(
-                to_number=from_phone,
-                text=reply,
-                paziente_id=pid,
-                medico_id=mid,
-            )
-            sent_reply = True
-        except Exception as e:
-            print(f"[agent] ERRORE invio reply: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
+        # Egress astratto (PR A): il canale lo risolve `channels`, non l'agente.
+        delivery = channels.deliver_to_patient(
+            paziente_id=pid,
+            text=reply,
+            medico_id=mid,
+        )
+        sent_reply = delivery.get("status") == "ok"
+        if not sent_reply:
+            print(f"[agent] invio reply non riuscito: {delivery}", flush=True)
 
     synthesis_inserted = False
     if synthesis:

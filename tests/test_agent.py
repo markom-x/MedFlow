@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import agent  # noqa: E402
+import channels  # noqa: E402
 import main  # noqa: E402
 from agent import ClinicalSynthesis, CopilotDecision  # noqa: E402
 
@@ -202,7 +203,11 @@ def patch_run_helpers(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(agent, "load_session", MagicMock(return_value=("IDLE", {})))
     monkeypatch.setattr(agent, "load_recent_conversation", MagicMock(return_value=[]))
     monkeypatch.setattr(agent, "save_session", MagicMock())
-    monkeypatch.setattr(agent, "_send_whatsapp_reply_and_log", MagicMock())
+    monkeypatch.setattr(
+        channels,
+        "deliver_to_patient",
+        MagicMock(return_value={"status": "ok", "channel": "whatsapp"}),
+    )
     monkeypatch.setattr(agent, "insert_richiesta", MagicMock())
     monkeypatch.setattr(agent, "_log_conversation_turn", MagicMock())
 
@@ -254,7 +259,7 @@ def test_run_for_job_ask_flow(
     assert out["phase"] == "COLLECTING_ANAMNESIS"
     assert out["sent_reply"] is True
     assert out["synthesis_inserted"] is False
-    agent._send_whatsapp_reply_and_log.assert_called_once()
+    channels.deliver_to_patient.assert_called_once()
     agent.insert_richiesta.assert_not_called()
     agent.save_session.assert_called_once()
     saved_state = agent.save_session.call_args.args[1]
