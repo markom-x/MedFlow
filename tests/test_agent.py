@@ -695,15 +695,30 @@ def test_run_for_job_text_path_invokes_retrieval_and_injects_context(
 
 # --------------------------- consultazione fascicolo (RAG medico-facing) ---------------------------
 
-def test_answer_fascicolo_query_short_query_no_retrieval(
+def test_answer_fascicolo_query_empty_query_no_retrieval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mock_retrieve = MagicMock()
     monkeypatch.setattr(agent, "retrieve_relevant_chunks", mock_retrieve)
-    out = agent.answer_fascicolo_query(PAZIENTE_ID, "hb?")
+    out = agent.answer_fascicolo_query(PAZIENTE_ID, "a")
     assert out["sources"] == []
     assert "specifica" in out["answer"].lower()
     mock_retrieve.assert_not_called()
+
+
+def test_answer_fascicolo_query_accepts_single_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una parola sola e mirata ("febbre", 6 char) deve passare il guard del
+    fascicolo (soglia bassa, FASCICOLO_MIN_QUERY_CHARS) e arrivare al retrieval."""
+    mock_retrieve = MagicMock(return_value=[])
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", mock_retrieve)
+    out = agent.answer_fascicolo_query(PAZIENTE_ID, "febbre")
+    mock_retrieve.assert_called_once()
+    # passa la soglia bassa dedicata al fascicolo, non quella alta del RAG anamnesi
+    assert mock_retrieve.call_args.kwargs["min_query_chars"] == agent.FASCICOLO_MIN_QUERY_CHARS
+    # con 0 chunk -> messaggio "non trovato", non il messaggio "poco specifica"
+    assert "fascicolo" in out["answer"].lower()
 
 
 def test_answer_fascicolo_query_no_chunks_returns_not_found(

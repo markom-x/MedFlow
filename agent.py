@@ -88,7 +88,15 @@ RAG_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_RAG_MIN_QUERY_CHARS", "8"))
 # Soglia piu' permissiva e top_k piu' alto rispetto al RAG interno dell'anamnesi:
 # qui il medico fa query mirate e vogliamo recuperare piu' contesto pertinente.
 FASCICOLO_TOP_K = int(os.getenv("MEDFLOW_FASCICOLO_TOP_K", "8"))
-FASCICOLO_MIN_SIMILARITY = float(os.getenv("MEDFLOW_FASCICOLO_MIN_SIMILARITY", "0.3"))
+# Soglia bassa di proposito: la PRECISIONE non e' affidata a questo numero ma al
+# prompt ancorato del synthesizer (risponde solo dal contesto, "non risulta" se
+# il chunk non e' pertinente). Tenerla bassa migliora il RECALL sui sinonimi
+# (es. "temperatura" ~0.24 vs "febbre" ~0.54) senza rischio di allucinazioni.
+FASCICOLO_MIN_SIMILARITY = float(os.getenv("MEDFLOW_FASCICOLO_MIN_SIMILARITY", "0.2"))
+# Soglia minima per la query del medico: piu' bassa del RAG interno dell'anamnesi
+# (RAG_MIN_QUERY_CHARS=8, pensato per scartare "ok"/"si" nei turni paziente).
+# Qui una parola singola e mirata ("febbre", "allergie", "hb") e' legittima.
+FASCICOLO_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_FASCICOLO_MIN_QUERY_CHARS", "2"))
 
 ANAMNESIS_SYSTEM_PROMPT = """Sei un assistente medico che conduce un'anamnesi pre-visita
 per conto di un Medico di Medicina Generale. Parli al paziente via WhatsApp in italiano,
@@ -329,16 +337,20 @@ def retrieve_relevant_chunks(
     query: str,
     top_k: int = RAG_TOP_K,
     min_similarity: float = RAG_MIN_SIMILARITY,
+    min_query_chars: int = RAG_MIN_QUERY_CHARS,
 ) -> list[dict]:
     """
     Similarity search via RPC `match_anamnesi_documenti`. Ritorna lista di dict
     (id, source_type, content, similarity, ...). Empty list se non c'e' nulla
     o se qualcosa fallisce.
+
+    `min_query_chars` e' configurabile: il path anamnesi usa la soglia alta di
+    default, la consultazione del fascicolo lato medico ne passa una piu' bassa.
     """
     if not supabase or not paziente_id:
         return []
     cleaned_query = (query or "").strip()
-    if len(cleaned_query) < RAG_MIN_QUERY_CHARS:
+    if len(cleaned_query) < min_query_chars:
         return []
     query_emb = _embed_text(cleaned_query)
     if not query_emb:
@@ -386,7 +398,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
     Mai solleva: errori -> messaggio fallback + sources vuoto.
     """
     cleaned = (query or "").strip()
-    if not paziente_id or len(cleaned) < RAG_MIN_QUERY_CHARS:
+    if not paziente_id or len(cleaned) < FASCICOLO_MIN_QUERY_CHARS:
         return {
             "answer": "Inserisci una domanda piu' specifica per interrogare il fascicolo.",
             "sources": [],
@@ -397,6 +409,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         cleaned,
         top_k=FASCICOLO_TOP_K,
         min_similarity=FASCICOLO_MIN_SIMILARITY,
+        min_query_chars=FASCICOLO_MIN_QUERY_CHARS,
     )
     if not chunks:
         return {
