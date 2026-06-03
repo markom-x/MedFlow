@@ -2,8 +2,8 @@
 
 import { cn } from "@/lib/utils";
 import type { PatientBucket } from "@/lib/dashboard/aggregate";
-import { lastMessagePreview } from "@/lib/dashboard/aggregate";
-import { needsAttention } from "@/lib/dashboard/format";
+import { highestUrgenza, lastMessagePreview } from "@/lib/dashboard/aggregate";
+import { needsAttention, urgencyMeta } from "@/lib/dashboard/format";
 
 type Props = {
   orderedIds: string[];
@@ -35,6 +35,13 @@ export function PatientSidebar({
             if (!bucket) return null;
             const { profile, requests } = bucket;
             const alert = needsAttention(requests);
+            const level = highestUrgenza(requests);
+            const meta = urgencyMeta(level);
+            const dotClass = level
+              ? meta.dotClass
+              : alert
+                ? "bg-red-600"
+                : "bg-emerald-600";
             const active = selectedId === id;
             const preview = lastMessagePreview(requests);
 
@@ -53,14 +60,26 @@ export function PatientSidebar({
                     <span
                       className={cn(
                         "mt-2 size-2.5 shrink-0 rounded-full",
-                        alert ? "bg-red-600" : "bg-emerald-600"
+                        dotClass
                       )}
-                      title={alert ? "Richiede attenzione" : "Nessuna azione urgente"}
+                      title={level ? meta.label : alert ? "Richiede attenzione" : "Nessuna azione urgente"}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-slate-900">
-                        {profile.nomeDisplay}
-                      </p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate font-semibold text-slate-900">
+                          {profile.nomeDisplay}
+                        </p>
+                        {level ? (
+                          <span
+                            className={cn(
+                              "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                              meta.badgeClass
+                            )}
+                          >
+                            {meta.short}
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="mt-1 line-clamp-2 text-sm leading-snug text-slate-600">
                         {preview}
                       </p>

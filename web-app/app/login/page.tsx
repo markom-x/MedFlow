@@ -1,16 +1,34 @@
 "use client";
 
-import { Loader2, Mail, ShieldCheck, Stethoscope } from "lucide-react";
+import { Loader2, Mail, PlayCircle, ShieldCheck, Stethoscope } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { enterDemo } from "@/lib/actions/demo";
 import { getSupabaseAuthBrowserClient } from "@/lib/supabase/auth-browser";
 
 function LoginForm() {
   const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
+  const [demoCode, setDemoCode] = useState("");
+  const [demoPending, setDemoPending] = useState(false);
+
+  async function onEnterDemo() {
+    setDemoPending(true);
+    try {
+      const res = await enterDemo(demoCode.trim() || undefined);
+      // In caso di successo il server reindirizza a /dashboard automaticamente.
+      if (res && res.ok === false) {
+        toast.error(res.error);
+      }
+    } catch {
+      toast.error("Accesso demo non riuscito. Riprova.");
+    } finally {
+      setDemoPending(false);
+    }
+  }
 
   const nextPath = useMemo(() => params.get("next") || "/", [params]);
   const hasInvalidLinkError =
@@ -129,6 +147,47 @@ function LoginForm() {
         <p className="mt-5 text-xs leading-relaxed text-slate-500">
           Riceverai un link monouso via email. Nessuna password da ricordare.
         </p>
+
+        <div className="my-6 flex items-center gap-3">
+          <span className="h-px flex-1 bg-slate-200/80" />
+          <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            oppure
+          </span>
+          <span className="h-px flex-1 bg-slate-200/80" />
+        </div>
+
+        <div className="rounded-2xl border border-violet-100/80 bg-gradient-to-br from-violet-50/60 to-white p-4 shadow-sm">
+          <p className="text-sm font-semibold text-slate-800">Accesso demo</p>
+          <p className="mt-1 text-xs leading-relaxed text-slate-500">
+            Entra subito nella dashboard di prova come medico, senza email.
+          </p>
+          <input
+            type="text"
+            value={demoCode}
+            onChange={(e) => setDemoCode(e.target.value)}
+            placeholder="Codice demo (se richiesto)"
+            className="mt-3 w-full rounded-xl border-0 bg-slate-100/90 px-3 py-2.5 text-sm text-slate-900 shadow-inner ring-1 ring-slate-200/60 transition-all placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            onClick={() => void onEnterDemo()}
+            disabled={demoPending}
+            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full border border-violet-200 bg-white px-5 py-3 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {demoPending ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                Accesso in corso...
+              </>
+            ) : (
+              <>
+                <PlayCircle className="size-4" />
+                Entra nella demo
+              </>
+            )}
+          </button>
+        </div>
       </section>
     </main>
   );

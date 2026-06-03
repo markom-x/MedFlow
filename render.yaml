@@ -36,6 +36,9 @@ services:
         sync: false
       - key: TWILIO_PHONE_NUMBER
         sync: false
+      # Token condiviso con la dashboard per autenticare /api/fascicolo/query.
+      - key: MEDFLOW_INTERNAL_TOKEN
+        sync: false
 
   - type: worker
     name: medflow-worker
@@ -66,3 +69,7 @@ services:
         value: "10"
       - key: WORKER_BACKOFF_CAP_S
         value: "3600"
+      # Forza il path agentico (LangGraph + RAG). Il path legacy ha il bug
+      # urgenza ROSSO/GIALLO/VERDE: non usarlo in prod.
+      - key: WORKER_USE_LEGACY
+        value: "0"

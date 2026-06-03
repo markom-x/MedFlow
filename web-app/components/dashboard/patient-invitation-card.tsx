@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { STUDIO_MEDICO_ID } from "@/lib/dashboard/constants";
 import { getSupabaseAuthBrowserClient } from "@/lib/supabase/auth-browser";
 
 /** WhatsApp click-to-chat expects digits only (country code + number, no +). */
@@ -15,11 +16,13 @@ function waMePhoneDigits(raw: string): string {
 
 function buildPatientActivationWhatsAppUrl(
   twilioPhoneRaw: string,
-  doctorAuthUid: string
+  medicoId: string
 ): string | null {
   const phone = waMePhoneDigits(twilioPhoneRaw);
-  if (!phone || !doctorAuthUid) return null;
-  const text = `Attivazione ${doctorAuthUid}`;
+  if (!phone || !medicoId) return null;
+  // Il backend (`Attivazione <uuid>`) verifica l'id contro `medici.id`, NON
+  // contro l'Auth UID: usiamo quindi l'id del medico dello studio.
+  const text = `Attivazione ${medicoId}`;
   return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
 }
 
@@ -58,11 +61,17 @@ export function PatientInvitationCard() {
   }, []);
 
   const twilioPhone = process.env.NEXT_PUBLIC_TWILIO_PHONE_NUMBER ?? "";
+  // Id del medico dello studio (coerente con le scritture lato dashboard e col
+  // webhook). Overridabile via env senza ricompilare il codice.
+  const medicoId =
+    process.env.NEXT_PUBLIC_MEDICO_STUDIO_ID?.trim() || STUDIO_MEDICO_ID;
 
   const magicLink = useMemo(() => {
+    // Mostriamo l'invito solo a medico loggato, ma il codice di attivazione e'
+    // quello del medico (medici.id), non l'Auth UID.
     if (doctorUid == null) return null;
-    return buildPatientActivationWhatsAppUrl(twilioPhone, doctorUid);
-  }, [twilioPhone, doctorUid]);
+    return buildPatientActivationWhatsAppUrl(twilioPhone, medicoId);
+  }, [twilioPhone, medicoId, doctorUid]);
 
   const handleCopy = useCallback(async () => {
     if (!magicLink) return;

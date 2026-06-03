@@ -598,10 +598,14 @@ def _enqueue_process_message_job(
     media_content_type_0: str,
     message_sid: str,
     profile_name: str,
+    media: list[dict] | None = None,
 ) -> bool:
     """
     Inserisce un job 'process_message' nella coda `public.jobs` (PR #2).
     Il worker (`worker.py`) lo consuma con `claim_one_job()`.
+
+    `media` e' la lista completa degli allegati ([{url, content_type}]); i campi
+    `media_url_0`/`media_content_type_0` restano per retro-compatibilita'.
 
     Ritorna True se l'INSERT e' andato a buon fine, False altrimenti.
     Il chiamante decide la strategia di fallback (es. elaborazione sincrona).
@@ -618,6 +622,7 @@ def _enqueue_process_message_job(
         "num_media": int(num_media or 0),
         "media_url_0": media_url_0 or "",
         "media_content_type_0": media_content_type_0 or "",
+        "media": media or [],
         "message_sid": message_sid or "",
         "profile_name": profile_name or "",
     }
@@ -858,6 +863,28 @@ def get_paziente_by_phone(from_number: str) -> tuple[str | None, str | None, str
         return None, None, None
 
 
+def normalize_urgenza(urgenza: str | None) -> str | None:
+    """
+    Normalizzazione difensiva: la dashboard si aspetta `alta|media|bassa`, ma il
+    path legacy storico scriveva `ROSSO|GIALLO|VERDE`. Mappiamo qualsiasi valore
+    semaforo residuo per evitare che righe legacy mostrino l'urgenza sbagliata.
+    Valori gia' corretti (o None) passano invariati.
+    """
+    if not urgenza:
+        return urgenza
+    val = str(urgenza).strip().lower()
+    legacy_map = {
+        "rosso": "alta",
+        "giallo": "media",
+        "verde": "bassa",
+    }
+    if val in legacy_map:
+        return legacy_map[val]
+    if val in {"alta", "media", "bassa"}:
+        return val
+    return urgenza
+
+
 def insert_richiesta(
     paziente_id: str,
     medico_id: str,
@@ -865,6 +892,7 @@ def insert_richiesta(
     riassunto_clinico: str | None,
     urgenza: str | None,
     url_media: str | None,
+    dati_clinici: dict | None = None,
 ) -> None:
     if not supabase:
         print("ERRORE: Supabase non configurato (SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY).", flush=True)
@@ -875,16 +903,40 @@ def insert_richiesta(
         "medico_id": medico_id,
         "messaggio_originale": messaggio_originale,
         "riassunto_clinico": riassunto_clinico,
-        "urgenza": urgenza,
+        "urgenza": normalize_urgenza(urgenza),
         "url_media": url_media,
     }
+    # Sintesi strutturata completa (incl. clinical_entities + source_reference per
+    # la "Visual Provenance"). Colonna JSONB opzionale: vedi
+    # web-app/sql/add_dati_clinici_to_richieste.sql. Se la colonna non esiste
+    # ancora (DB non migrato) facciamo fallback all'insert legacy senza perdere
+    # la riga.
+    if dati_clinici is not None:
+        payload["dati_clinici"] = dati_clinici
+
+    def _do_insert(p: dict):
+        result = supabase.table("richieste").insert(p).execute()
+        return getattr(result, "data", None)
+
     try:
         print("[DB] Inizio salvataggio tabella richieste…", flush=True)
-        result = supabase.table("richieste").insert(payload).execute()
-        data = getattr(result, "data", None)
+        try:
+            data = _do_insert(payload)
+        except Exception as e_first:
+            # Retry senza `dati_clinici` se la colonna non e' (ancora) presente.
+            if "dati_clinici" in payload:
+                print(
+                    f"[DB] insert richieste con dati_clinici fallito ({type(e_first).__name__}), "
+                    "retry senza colonna (DB non migrato?).",
+                    flush=True,
+                )
+                fallback = {k: v for k, v in payload.items() if k != "dati_clinici"}
+                data = _do_insert(fallback)
+            else:
+                raise
         if not data:
             print(
-                f"ERRORE: insert richieste — risposta senza `data` (possibile errore PostgREST): {result!r}",
+                f"ERRORE: insert richieste — risposta senza `data` (possibile errore PostgREST): {data!r}",
                 flush=True,
             )
             return
@@ -1268,6 +1320,14 @@ def twilio_webhook(
     NumMedia: int = Form(default=0),
     MediaUrl0: str = Form(default=""),
     MediaContentType0: str = Form(default=""),
+    MediaUrl1: str = Form(default=""),
+    MediaContentType1: str = Form(default=""),
+    MediaUrl2: str = Form(default=""),
+    MediaContentType2: str = Form(default=""),
+    MediaUrl3: str = Form(default=""),
+    MediaContentType3: str = Form(default=""),
+    MediaUrl4: str = Form(default=""),
+    MediaContentType4: str = Form(default=""),
     MessageSid: str = Form(default=""),
     ProfileName: str = Form(default=""),
 ) -> Response:
@@ -1302,6 +1362,21 @@ def twilio_webhook(
     profile_name = _normalize_person_name(ProfileName)
     incoming_text = (Body or "").strip()
     media_url_clean = (MediaUrl0 or "").strip() or None
+
+    # Lista completa degli allegati del messaggio (Twilio: MediaUrl0..N). Su
+    # WhatsApp e' tipicamente un solo allegato, ma supportiamo fino a 5.
+    _media_candidates = [
+        (MediaUrl0, MediaContentType0),
+        (MediaUrl1, MediaContentType1),
+        (MediaUrl2, MediaContentType2),
+        (MediaUrl3, MediaContentType3),
+        (MediaUrl4, MediaContentType4),
+    ]
+    incoming_media = [
+        {"url": u.strip(), "content_type": (ct or "").strip()}
+        for (u, ct) in _media_candidates
+        if u and u.strip()
+    ]
 
     if not supabase:
         _send_whatsapp_reply_and_log(
@@ -1475,6 +1550,7 @@ def twilio_webhook(
         media_content_type_0=MediaContentType0,
         message_sid=MessageSid,
         profile_name=profile_name or "",
+        media=incoming_media,
     )
     if not enqueued:
         print(

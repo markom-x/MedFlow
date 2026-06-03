@@ -18,6 +18,8 @@ type Props = {
   fascicoloLayout?: boolean;
   /** In galleria mostra solo immagini e PDF (esclude vocali) */
   galleryVisualOnly?: boolean;
+  /** Nasconde il blocco super-riassunto (quando la sintesi e' gia' mostrata altrove) */
+  hideSummary?: boolean;
 };
 
 export function RecapSection({
@@ -26,6 +28,7 @@ export function RecapSection({
   variant = "default",
   fascicoloLayout = false,
   galleryVisualOnly = false,
+  hideSummary = false,
 }: Props) {
   const narrow = variant === "sidebar";
   const sortedDesc = [...requests].sort(
@@ -54,45 +57,47 @@ export function RecapSection({
         className
       )}
     >
-      <div
-        className={cn(
-          "rounded-2xl border border-slate-200/90 bg-white shadow-sm",
-          fascicoloLayout && "border-blue-100/80 bg-gradient-to-b from-blue-50/40 to-white p-8",
-          !fascicoloLayout && (narrow ? "p-4" : "p-6"),
-          !fascicoloLayout && "rounded-xl"
-        )}
-      >
-        <div className="flex items-center gap-2">
-          <Sparkles
-            className={cn(
-              "shrink-0 text-blue-600",
-              narrow ? "size-4" : fascicoloLayout ? "size-6" : "size-5"
-            )}
-            strokeWidth={1.75}
-            aria-hidden
-          />
-          <h2
-            className={cn(
-              "font-semibold uppercase tracking-wide text-blue-800",
-              fascicoloLayout ? "text-sm" : "text-xs"
-            )}
-          >
-            Super riassunto IA
-          </h2>
-        </div>
-        <p
+      {hideSummary ? null : (
+        <div
           className={cn(
-            "mt-4 font-semibold leading-relaxed text-slate-900",
-            narrow ? "text-sm" : fascicoloLayout ? "text-xl" : "text-lg"
+            "rounded-2xl border border-slate-200/90 bg-white shadow-sm",
+            fascicoloLayout && "border-blue-100/80 bg-gradient-to-b from-blue-50/40 to-white p-8",
+            !fascicoloLayout && (narrow ? "p-4" : "p-6"),
+            !fascicoloLayout && "rounded-xl"
           )}
         >
-          {superSummary ?? (
-            <span className="font-normal text-slate-600">
-              Nessun riassunto IA disponibile per questo paziente.
-            </span>
-          )}
-        </p>
-      </div>
+          <div className="flex items-center gap-2">
+            <Sparkles
+              className={cn(
+                "shrink-0 text-blue-600",
+                narrow ? "size-4" : fascicoloLayout ? "size-6" : "size-5"
+              )}
+              strokeWidth={1.75}
+              aria-hidden
+            />
+            <h2
+              className={cn(
+                "font-semibold uppercase tracking-wide text-blue-800",
+                fascicoloLayout ? "text-sm" : "text-xs"
+              )}
+            >
+              Super riassunto IA
+            </h2>
+          </div>
+          <p
+            className={cn(
+              "mt-4 font-semibold leading-relaxed text-slate-900",
+              narrow ? "text-sm" : fascicoloLayout ? "text-xl" : "text-lg"
+            )}
+          >
+            {superSummary ?? (
+              <span className="font-normal text-slate-600">
+                Nessun riassunto IA disponibile per questo paziente.
+              </span>
+            )}
+          </p>
+        </div>
+      )}
 
       <div>
         <h3

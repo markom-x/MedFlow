@@ -27,7 +27,12 @@ if str(ROOT) not in sys.path:
 import agent  # noqa: E402
 import channels  # noqa: E402
 import main  # noqa: E402
-from agent import ClinicalSynthesis, CopilotDecision  # noqa: E402
+from agent import (  # noqa: E402
+    ClinicalEntity,
+    ClinicalSynthesis,
+    CopilotDecision,
+    SourceReference,
+)
 
 
 PAZIENTE_ID = "11111111-1111-4111-8111-111111111111"
@@ -77,6 +82,86 @@ def test_route_pdf_goes_to_vision() -> None:
         "incoming_media_content_type": "application/pdf",
     }
     assert agent.route_after_input(state) == "vision_ocr"
+
+
+# --------------------------- Fase 1: OCR PDF (PyMuPDF) ---------------------------
+
+def _make_pdf_with_text(text: str) -> bytes:
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def _make_blank_pdf(pages: int = 1) -> bytes:
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    for _ in range(pages):
+        doc.new_page()
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_pdf_native_text_extracted_without_vision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PDF digitale: il testo nativo viene estratto senza chiamare la vision."""
+    spy = MagicMock(return_value="NON_DOVEVA_ESSERE_CHIAMATA")
+    monkeypatch.setattr(agent, "_vision_ocr_image_bytes", spy)
+    pdf = _make_pdf_with_text("Emoglobina 12.4 g/dL - range 13-17 - referto ematochimico")
+
+    out = agent._vision_extract_text(pdf, "application/pdf")
+
+    assert "Emoglobina" in out
+    assert "[Pagina 1]" in out
+    spy.assert_not_called()
+
+
+def test_pdf_scanned_page_uses_vision_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pagina senza testo nativo: viene renderizzata e passata alla vision OCR."""
+    spy = MagicMock(return_value="Referto scansionato: glicemia 95 mg/dL")
+    monkeypatch.setattr(agent, "_vision_ocr_image_bytes", spy)
+    pdf = _make_blank_pdf(1)
+
+    out = agent._vision_extract_text(pdf, "application/pdf")
+
+    spy.assert_called_once()
+    assert "[Pagina 1 - OCR]" in out
+    assert "glicemia 95" in out
+
+
+def test_pdf_page_cap_is_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Oltre PDF_MAX_PAGES le pagine extra non vengono elaborate."""
+    monkeypatch.setattr(agent, "PDF_MAX_PAGES", 2)
+    spy = MagicMock(return_value="ocr")
+    monkeypatch.setattr(agent, "_vision_ocr_image_bytes", spy)
+    pdf = _make_blank_pdf(5)
+
+    out = agent._vision_extract_text(pdf, "application/pdf")
+
+    assert spy.call_count == 2
+    assert "pagine ulteriori non elaborate" in out
+
+
+def test_vision_extract_image_delegates_to_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    spy = MagicMock(return_value="Hb 12.4")
+    monkeypatch.setattr(agent, "_vision_ocr_image_bytes", spy)
+    out = agent._vision_extract_text(b"\x89PNGfake", "image/png")
+    assert out == "Hb 12.4"
+    spy.assert_called_once()
+
+
+def test_pdf_missing_pymupdf_returns_graceful_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_import(_bytes: bytes) -> str:
+        raise ImportError("no fitz")
+
+    monkeypatch.setattr(agent, "_extract_pdf_text", _raise_import)
+    out = agent._vision_extract_text(b"%PDF-1.4 fake", "application/pdf")
+    assert "PDF" in out and "non disponibile" in out
 
 
 # --------------------------- nodi copilot / synthesizer ---------------------------
@@ -537,6 +622,48 @@ def test_node_retrieval_injects_system_message_when_chunks_present(
     assert "Cefalea muscolo-tensiva" in sys_msg.content
 
 
+def test_recent_human_text_concatenates_last_turns() -> None:
+    from langchain_core.messages import AIMessage as _AI
+
+    msgs = [
+        HumanMessage(content="Ho mal di testa"),
+        _AI(content="Da quanto?"),
+        HumanMessage(content="da ieri"),
+        _AI(content="Hai febbre?"),
+        HumanMessage(content="si"),
+    ]
+    out = agent._recent_human_text(msgs, max_turns=3)
+    # Deve contenere le ultime 3 battute del paziente, in ordine cronologico.
+    assert out == "Ho mal di testa\nda ieri\nsi"
+
+
+def test_recent_human_text_caps_length() -> None:
+    long = "x" * 5000
+    out = agent._recent_human_text([HumanMessage(content=long)], max_turns=3, max_chars=2000)
+    assert len(out) == 2000
+
+
+def test_node_retrieval_uses_permissive_chat_thresholds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def fake_retrieve(pid, query, **kwargs):
+        captured.update(kwargs)
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", fake_retrieve)
+    state = {
+        "paziente_id": PAZIENTE_ID,
+        "messages": [HumanMessage(content="febbre")],
+    }
+    agent.node_retrieval(state)
+    assert captured["min_similarity"] == agent.RAG_CHAT_MIN_SIMILARITY
+    assert captured["min_query_chars"] == agent.RAG_CHAT_MIN_QUERY_CHARS
+    assert captured["query"] == "febbre"
+
+
 def test_node_retrieval_noop_when_no_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
     state = {
@@ -604,13 +731,105 @@ def test_node_embed_and_index_skips_error_placeholder(
         "extracted_docs": [{"extracted_text": "[Errore OCR: TimeoutError]"}],
     }
     out = agent.node_embed_and_index(state)
-    assert out == {"needs_indexing": False}
+    assert out["needs_indexing"] is False
     mock_index.assert_not_called()
 
 
-# --------------------------- PR #4: synthesizer indexa la sintesi ---------------------------
+# --------------------------- Fase 1: multi-allegato ---------------------------
 
-def test_synthesizer_indexes_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_route_uses_first_media_in_list() -> None:
+    state = {
+        "incoming_media": [
+            {"url": "https://t/1", "content_type": "image/jpeg"},
+            {"url": "https://t/2", "content_type": "application/pdf"},
+        ]
+    }
+    assert agent.route_after_input(state) == "vision_ocr"
+    state_audio = {"incoming_media": [{"url": "https://t/a", "content_type": "audio/ogg"}]}
+    assert agent.route_after_input(state_audio) == "whisper_transcribe"
+
+
+def test_vision_ocr_processes_all_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tutti gli allegati immagine/PDF del turno vengono OCR e accodati."""
+    monkeypatch.setattr(
+        agent,
+        "download_twilio_media_requests",
+        MagicMock(return_value=(b"bytes", "image/jpeg", None)),
+    )
+    monkeypatch.setattr(agent, "upload_bytes_to_supabase_bucket", MagicMock())
+    monkeypatch.setattr(
+        agent,
+        "_vision_extract_text",
+        MagicMock(side_effect=["Referto A: Hb 12", "Referto B: glicemia 95"]),
+    )
+    state = {
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "message_sid": "SM_MULTI",
+        "incoming_media": [
+            {"url": "https://t/1", "content_type": "image/jpeg"},
+            {"url": "https://t/2", "content_type": "image/png"},
+        ],
+    }
+    out = agent.node_vision_ocr(state)
+    assert len(out["extracted_docs"]) == 2
+    assert len(out["pending_index_docs"]) == 2
+    assert out["needs_indexing"] is True
+    assert len(out["messages"]) == 2
+    assert "Referto A" in out["extracted_docs"][0]["extracted_text"]
+    assert "Referto B" in out["extracted_docs"][1]["extracted_text"]
+
+
+def test_embed_indexes_all_pending_docs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """embed_and_index indicizza TUTTI i doc del turno, con source_id univoco."""
+    mock_index = MagicMock(return_value=1)
+    monkeypatch.setattr(agent, "index_document", mock_index)
+    state = {
+        "needs_indexing": True,
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "message_sid": "SM_MULTI",
+        "pending_index_docs": [
+            {"extracted_text": "Referto A", "index_source_type": "referto_ocr", "media_index": 0},
+            {"extracted_text": "Referto B", "index_source_type": "referto_ocr", "media_index": 1},
+        ],
+    }
+    out = agent.node_embed_and_index(state)
+    assert out["needs_indexing"] is False
+    assert mock_index.call_count == 2
+    sids = {c.kwargs["source_id"] for c in mock_index.call_args_list}
+    assert sids == {"SM_MULTI-0", "SM_MULTI-1"}
+
+
+def test_whisper_transcript_is_indexed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La trascrizione vocale diventa un doc indicizzabile (non finisce in conversazioni)."""
+    monkeypatch.setattr(
+        agent,
+        "download_twilio_media_requests",
+        MagicMock(return_value=(b"audio", "audio/ogg", None)),
+    )
+    monkeypatch.setattr(agent, "upload_file_bytes_to_storage", MagicMock())
+    monkeypatch.setattr(
+        agent, "transcribe_audio_bytes_whisper", MagicMock(return_value="Ho mal di pancia da ieri")
+    )
+    state = {
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "message_sid": "SM_AUDIO",
+        "incoming_media": [{"url": "https://t/a", "content_type": "audio/ogg"}],
+    }
+    out = agent.node_whisper_transcribe(state)
+    assert out["needs_indexing"] is True
+    assert out["pending_index_docs"][0]["index_source_type"] == "conversazione"
+    assert "mal di pancia" in out["pending_index_docs"][0]["extracted_text"]
+
+
+# --------------------------- Fase 0: synthesizer NON indicizza inline ---------------------------
+
+def test_synthesizer_does_not_index_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dedup RAG: il synthesizer produce la sintesi ma NON la indicizza piu'
+    inline. L'indicizzazione e' delegata al trigger DB su `richieste`
+    (source_id = richiesta.id), unica sorgente condivisa col backfill."""
     fake = ClinicalSynthesis(
         chief_complaint="Dolore lombare",
         history_of_present_illness="Da 5 giorni dopo sollevamento pesi",
@@ -632,11 +851,8 @@ def test_synthesizer_indexes_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
     out = agent.node_clinical_synthesizer(state)
 
     assert out["current_phase"] == "FINISHED"
-    mock_index.assert_called_once()
-    kw = mock_index.call_args.kwargs
-    assert kw["source_type"] == "richiesta_sintesi"
-    assert "Dolore lombare" in kw["text"]
-    assert kw["metadata"]["livello_urgenza"] == "bassa"
+    assert out["synthesis"]["chief_complaint"] == "Dolore lombare"
+    mock_index.assert_not_called()
 
 
 # --------------------------- PR #4: run_for_job con RAG attivo ---------------------------
@@ -1081,3 +1297,170 @@ def test_index_job_row_not_found_errors(
     )
     assert out["status"] == "error"
     assert out["reason"] == "row_non_trovata"
+
+
+# --------------------------- Visual Provenance ---------------------------
+
+def test_vision_ocr_attaches_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """vision_ocr conserva e propaga la provenienza: storage path Supabase
+    ({telefono}/{filename}) come source_reference, sia nel doc di stato sia
+    nell'header del messaggio che il synthesizer legge."""
+    monkeypatch.setattr(
+        agent,
+        "download_twilio_media_requests",
+        MagicMock(return_value=(b"%PDF-1.4 fake", "application/pdf", None)),
+    )
+    monkeypatch.setattr(agent, "upload_bytes_to_supabase_bucket", MagicMock())
+    monkeypatch.setattr(
+        agent,
+        "_storage_relative_path",
+        MagicMock(return_value="+393331234567/referto_whatsapp_1.pdf"),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_vision_extract_text",
+        MagicMock(return_value="[Pagina 1]\nEmoglobina 12.4 g/dL\n\n[Pagina 2]\nGlicemia 95 mg/dL"),
+    )
+
+    state = {
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "phone": PHONE,
+        "message_sid": "SM_PROV",
+        "incoming_media": [{"url": "https://t/1", "content_type": "application/pdf"}],
+    }
+    out = agent.node_vision_ocr(state)
+
+    doc = out["extracted_docs"][0]
+    assert doc["storage_path"] == "+393331234567/referto_whatsapp_1.pdf"
+    assert doc["source_reference"] == "+393331234567/referto_whatsapp_1.pdf"
+
+    # Header di provenienza inline + marcatori di pagina visibili al synthesizer.
+    msg_text = out["messages"][0].content
+    assert "fonte_documento: +393331234567/referto_whatsapp_1.pdf" in msg_text
+    assert "[Pagina 2]" in msg_text
+    assert "Emoglobina 12.4" in msg_text
+
+
+def test_vision_ocr_provenance_falls_back_to_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Se il path storage non e' calcolabile, source_reference ripiega sull'URL
+    del media: nessuna entita' resta senza riferimento."""
+    monkeypatch.setattr(
+        agent,
+        "download_twilio_media_requests",
+        MagicMock(return_value=(b"bytes", "image/jpeg", None)),
+    )
+    monkeypatch.setattr(agent, "upload_bytes_to_supabase_bucket", MagicMock())
+    monkeypatch.setattr(
+        agent,
+        "_storage_relative_path",
+        MagicMock(side_effect=RuntimeError("no path")),
+    )
+    monkeypatch.setattr(agent, "_vision_extract_text", MagicMock(return_value="Hb 12.4"))
+
+    state = {
+        "paziente_id": PAZIENTE_ID,
+        "medico_id": MEDICO_ID,
+        "phone": PHONE,
+        "message_sid": "SM_PROV2",
+        "incoming_media": [{"url": "https://twilio/media/abc", "content_type": "image/jpeg"}],
+    }
+    out = agent.node_vision_ocr(state)
+    doc = out["extracted_docs"][0]
+    assert doc["storage_path"] is None
+    assert doc["source_reference"] == "https://twilio/media/abc"
+    assert "fonte_documento: https://twilio/media/abc" in out["messages"][0].content
+
+
+def test_synthesizer_emits_source_reference_for_document_entities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Le entita' cliniche da referto portano source_reference {url,page};
+    quelle dalla conversazione hanno source_reference null."""
+    fake = ClinicalSynthesis(
+        chief_complaint="Astenia",
+        history_of_present_illness="Hb 10.1 g/dL al controllo; astenia da 2 settimane.",
+        medications=[],
+        red_flags=[],
+        livello_urgenza="media",
+        sintesi_medica="Anemia lieve in approfondimento.",
+        clinical_entities=[
+            ClinicalEntity(
+                description="Hb 10.1 g/dL (v.n. 13-17)",
+                category="esame_laboratorio",
+                source_reference=SourceReference(
+                    url="+393331234567/referto_whatsapp_1.pdf", page=2
+                ),
+            ),
+            ClinicalEntity(
+                description="astenia da 2 settimane",
+                category="sintomo",
+                source_reference=None,
+            ),
+        ],
+    )
+    monkeypatch.setattr(agent, "_synthesize_clinical", MagicMock(return_value=fake))
+
+    state = {"messages": [HumanMessage(content="Mi sento stanco, ho fatto le analisi")]}
+    out = agent.node_clinical_synthesizer(state)
+
+    entities = out["synthesis"]["clinical_entities"]
+    assert len(entities) == 2
+    # entita' da documento -> source_reference popolato con url + page
+    assert entities[0]["source_reference"]["url"] == "+393331234567/referto_whatsapp_1.pdf"
+    assert entities[0]["source_reference"]["page"] == 2
+    # entita' da conversazione -> source_reference null
+    assert entities[1]["source_reference"] is None
+    # backward compat: i campi storici restano invariati
+    assert out["synthesis"]["livello_urgenza"] == "media"
+    assert out["synthesis"]["chief_complaint"] == "Astenia"
+
+
+def test_run_for_job_finalize_persists_dati_clinici(
+    patch_run_helpers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_for_job passa l'intera sintesi (incl. clinical_entities con
+    source_reference) a insert_richiesta come dati_clinici, cosi' il frontend
+    puo' offrire il bottone 'apri referto'."""
+    monkeypatch.setattr(
+        agent,
+        "_decide_copilot_action",
+        MagicMock(return_value=CopilotDecision(action="finalize")),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_synthesize_clinical",
+        MagicMock(
+            return_value=ClinicalSynthesis(
+                chief_complaint="Astenia",
+                history_of_present_illness="Hb 10.1 g/dL",
+                medications=[],
+                red_flags=[],
+                livello_urgenza="media",
+                sintesi_medica="Anemia lieve.",
+                clinical_entities=[
+                    ClinicalEntity(
+                        description="Hb 10.1 g/dL",
+                        category="esame_laboratorio",
+                        source_reference=SourceReference(
+                            url="+393331234567/ref.pdf", page=1
+                        ),
+                    )
+                ],
+            )
+        ),
+    )
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
+    monkeypatch.setattr(agent, "index_document", MagicMock(return_value=0))
+
+    out = agent.run_for_job(_payload(body="mi sento stanco"))
+
+    assert out["status"] == "ok"
+    assert out["synthesis_inserted"] is True
+    kw = agent.insert_richiesta.call_args.kwargs
+    # backward compat: i campi storici ci sono ancora
+    assert kw["urgenza"] == "media"
+    # nuovo: la sintesi strutturata con provenienza
+    dati = kw["dati_clinici"]
+    assert dati["clinical_entities"][0]["source_reference"]["url"] == "+393331234567/ref.pdf"
+    assert dati["clinical_entities"][0]["source_reference"]["page"] == 1

@@ -73,8 +73,14 @@ from main import (
 CHAT_MODEL = os.getenv("MEDFLOW_CHAT_MODEL", "gpt-4o")
 VISION_MODEL = os.getenv("MEDFLOW_VISION_MODEL", "gpt-4o")
 EMBEDDING_MODEL = os.getenv("MEDFLOW_EMBEDDING_MODEL", "text-embedding-3-small")
+
+# OCR PDF: cap pagine elaborate per contenere costi vision; soglia di caratteri
+# sotto la quale una pagina e' considerata "scansionata" -> OCR vision.
+PDF_MAX_PAGES = int(os.getenv("MEDFLOW_PDF_MAX_PAGES", "8"))
+PDF_PAGE_MIN_TEXT_CHARS = int(os.getenv("MEDFLOW_PDF_PAGE_MIN_TEXT_CHARS", "40"))
+PDF_RENDER_DPI = int(os.getenv("MEDFLOW_PDF_RENDER_DPI", "180"))
 EMBEDDING_DIM = 1536  # text-embedding-3-small
-MAX_TURNS_BEFORE_FORCE_FINALIZE = int(os.getenv("MEDFLOW_MAX_TURNS", "8"))
+MAX_TURNS_BEFORE_FORCE_FINALIZE = int(os.getenv("MEDFLOW_MAX_TURNS", "10"))
 HISTORY_LIMIT = int(os.getenv("MEDFLOW_HISTORY_LIMIT", "30"))
 
 # RAG knob
@@ -83,6 +89,14 @@ CHUNK_OVERLAP_CHARS = int(os.getenv("MEDFLOW_CHUNK_OVERLAP_CHARS", "200"))
 RAG_TOP_K = int(os.getenv("MEDFLOW_RAG_TOP_K", "5"))
 RAG_MIN_SIMILARITY = float(os.getenv("MEDFLOW_RAG_MIN_SIMILARITY", "0.5"))
 RAG_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_RAG_MIN_QUERY_CHARS", "8"))
+# Retrieval in-chat (dentro l'anamnesi): query costruita dalle ultime N battute
+# del paziente (non solo l'ultima) e soglie piu' permissive, cosi' anche risposte
+# brevi ("si", "da ieri") agganciano il contesto della conversazione. La
+# precisione resta garantita dal prompt ancorato, non dalla soglia.
+RAG_QUERY_TURNS = int(os.getenv("MEDFLOW_RAG_QUERY_TURNS", "3"))
+RAG_QUERY_MAX_CHARS = int(os.getenv("MEDFLOW_RAG_QUERY_MAX_CHARS", "2000"))
+RAG_CHAT_MIN_SIMILARITY = float(os.getenv("MEDFLOW_RAG_CHAT_MIN_SIMILARITY", "0.2"))
+RAG_CHAT_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_RAG_CHAT_MIN_QUERY_CHARS", "2"))
 
 # Consultazione del fascicolo lato medico (interrogazione in linguaggio naturale).
 # Soglia piu' permissiva e top_k piu' alto rispetto al RAG interno dell'anamnesi:
@@ -102,18 +116,27 @@ ANAMNESIS_SYSTEM_PROMPT = """Sei un assistente medico che conduce un'anamnesi pr
 per conto di un Medico di Medicina Generale. Parli al paziente via WhatsApp in italiano,
 in modo empatico, chiaro e professionale. Non sei il medico: non diagnostichi e non prescrivi.
 
-Il tuo obiettivo: raccogliere in pochi turni le informazioni essenziali per il medico.
-Per ogni turno devi decidere tra due azioni:
-  - "ask": fai UNA sola domanda mirata, breve, in italiano colloquiale. Non elencare,
-           non sovraccaricare. Se il paziente ha allegato un referto OCR, tienine conto.
-  - "finalize": ritieni di avere abbastanza informazioni per consegnare la sintesi al medico.
-                Scegli "finalize" non appena hai sintomi principali, durata, contesto e
-                eventuali farmaci in corso o red flags evidenti.
+Il tuo obiettivo: raccogliere in pochi turni le informazioni essenziali per il medico,
+tenendo conto di TUTTO il contesto disponibile: i messaggi precedenti del paziente, i
+referti allegati (testo OCR nei messaggi marcati [Referto...]), le trascrizioni dei vocali,
+ed eventuale storia clinica pregressa iniettata come messaggio di sistema dal sistema RAG.
+
+Per ogni turno decidi tra due azioni:
+  - "ask": UNA sola domanda mirata, breve, colloquiale. Non elencare, non sovraccaricare.
+           Non ripetere domande gia' risposte nei turni o nei referti: leggi prima cio'
+           che il paziente ha gia' detto/allegato. Approfondisci cio' che manca per il
+           medico (es. durata, intensita', sintomi associati, terapie in corso, allergie).
+  - "finalize": hai abbastanza per consegnare la sintesi al medico. Finalizza non appena
+                hai sintomi principali, durata, contesto e farmaci/red flags evidenti.
+                Non trascinare la conversazione: meglio poche domande utili.
 
 Regole:
 - Una domanda per turno. Niente preamboli lunghi.
-- Se sospetti red flag (dolore toracico forte, dispnea grave, deficit neurologici,
-  emorragie, perdita di coscienza), finalizza subito con livello_urgenza='alta'.
+- Se il paziente ha allegato un referto, integra quei valori nel ragionamento e, se serve,
+  chiedi solo il dettaglio clinico mancante (non chiedere dati gia' presenti nel referto).
+- Se sospetti red flag (dolore toracico, dispnea grave, deficit neurologici, emorragie,
+  perdita di coscienza, sintomi neurologici acuti), finalizza subito con urgenza 'alta'.
+- Se il medico e' gia' intervenuto in chat (messaggi del medico), non contraddirlo.
 - Mai mostrare PII di altri pazienti, mai inventare dati clinici.
 
 Rispondi SEMPRE con l'output strutturato richiesto, non con testo libero.
@@ -121,18 +144,38 @@ Rispondi SEMPRE con l'output strutturato richiesto, non con testo libero.
 
 
 SYNTHESIZER_SYSTEM_PROMPT = """Sei l'agente di sintesi clinica di MedFlow. A partire
-dallo storico della conversazione paziente-bot e dagli eventuali referti OCR, produci
-una sintesi strutturata per il medico in italiano.
+dall'INTERA conversazione paziente-bot (e dal medico se intervenuto), dai referti allegati
+(testo OCR) e dalle trascrizioni dei vocali, produci una sintesi strutturata per il medico
+in italiano. Il medico la legge in pochi secondi: deve essere accurata, densa e fedele.
 
 Schema rigoroso (la dashboard del medico legge questi campi):
-- chief_complaint: motivo principale, una frase.
-- history_of_present_illness: dettagli (durata, fattori scatenanti, sintomi associati).
-- medications: lista di farmaci citati dal paziente.
-- red_flags: eventuali segnali di allarme.
-- livello_urgenza: 'alta' | 'media' | 'bassa' (minuscolo, italiano).
-- sintesi_medica: 1-2 frasi clinico-sintetiche, max 30 parole.
+- chief_complaint: motivo principale di contatto, una frase concisa.
+- history_of_present_illness: anamnesi della patologia attuale. Includi quando rilevanti:
+  esordio e durata, andamento, fattori scatenanti/allevianti, sintomi associati, e i valori
+  oggettivi presenti nei referti (es. "Hb 12.4 g/dL", "PA 150/95", "glicemia 180 mg/dL")
+  con la loro unita'. Riporta i dati, non interpretarli.
+- medications: farmaci citati dal paziente o nei referti (nome + eventuale dose).
+- red_flags: segnali di allarme emersi; lista vuota se nessuno.
+- livello_urgenza: 'alta' | 'media' | 'bassa' (minuscolo, italiano), coerente con i red flag.
+- sintesi_medica: 1-2 frasi clinico-sintetiche (max ~35 parole) che orientino subito il medico.
+- clinical_entities: elenco delle entita' cliniche OGGETTIVE emerse (esami di laboratorio e i
+  loro valori, parametri vitali, patologie remote/croniche, farmaci, diagnosi documentate).
+  Per ciascuna:
+    * description: il dato conciso con valore e unita' se presenti (es. "Hb 12.4 g/dL").
+    * category: tipo del dato (es. 'esame_laboratorio', 'patologia_remota', 'farmaco', 'diagnosi').
+    * source_reference: la PROVENIENZA documentale. I referti allegati ti arrivano come messaggi
+      marcati con un header del tipo [Referto allegato — OCR | fonte_documento: <PATH> | content_type: <CT>]
+      (per i PDF il testo contiene anche marcatori [Pagina N]). Quando un'entita' deriva da uno di
+      questi referti, popola source_reference con:
+        - url: ESATTAMENTE il valore <PATH> dell'header fonte_documento del referto da cui hai letto il dato;
+        - page: il numero della [Pagina N] vicino al dato per i PDF multipagina, altrimenti null.
+      Se invece il dato proviene dalla conversazione testuale o dai vocali del paziente (non da un
+      referto allegato), lascia source_reference a null. NON inventare URL o numeri di pagina.
 
-Non includere PII (nome, cognome, telefono) nella sintesi.
+Vincoli:
+- USA SOLO le informazioni presenti nella conversazione e nei documenti. NON inventare valori,
+  diagnosi o farmaci non menzionati. Se un dato non e' disponibile, ometti il campo o lascialo vuoto.
+- Non includere PII (nome, cognome, telefono) nella sintesi.
 """.strip()
 
 
@@ -167,6 +210,9 @@ class AgentState(TypedDict, total=False):
     incoming_body: str
     incoming_media_url: str
     incoming_media_content_type: str
+    # Lista di TUTTI gli allegati del turno: [{"url", "content_type"}]. Su WhatsApp
+    # e' tipicamente 0/1 elemento, ma il grafo e' pronto al multi-allegato.
+    incoming_media: list[dict]
 
     # Storia condivisa: il reducer `add_messages` accumula in modo idempotente.
     messages: Annotated[list[BaseMessage], add_messages]
@@ -182,6 +228,10 @@ class AgentState(TypedDict, total=False):
 
     # Flag transient: settato da vision_ocr/whisper, consumato da embed_and_index.
     needs_indexing: bool
+    # Documenti prodotti in QUESTO turno (OCR referti, trascrizioni vocali) da
+    # indicizzare. Permette a embed_and_index di indicizzarli TUTTI, non solo
+    # l'ultimo. Ogni elemento e' un doc come in extracted_docs + `index_source_type`.
+    pending_index_docs: list[dict]
 
     # Per debug / log
     last_error: str | None
@@ -205,6 +255,56 @@ class CopilotDecision(BaseModel):
     )
 
 
+class SourceReference(BaseModel):
+    """Provenienza documentale di un'entita' clinica ("Visual Provenance").
+
+    `url` e' il riferimento all'allegato da cui il dato e' stato estratto: il
+    path relativo nello storage Supabase (`{telefono}/{filename}`, bucket
+    `referti`) oppure, in fallback, l'URL del media. Il frontend lo usa per
+    aprire l'immagine/pagina esatta da cui l'AI ha letto il valore.
+    `page` e' la pagina (1-based) per i PDF multipagina; None per immagini
+    singole o quando la pagina non e' nota."""
+
+    url: str = Field(
+        description=(
+            "Path storage Supabase ({telefono}/{filename}) o URL del referto "
+            "allegato da cui proviene il dato."
+        )
+    )
+    page: int | None = Field(
+        default=None,
+        description="Numero di pagina (1-based) per PDF multipagina; None per immagini singole.",
+    )
+
+
+class ClinicalEntity(BaseModel):
+    """Singola entita' clinica oggettiva estratta (es. esame di laboratorio
+    anomalo, valore vitale, patologia remota, farmaco), con il riferimento alla
+    fonte documentale quando proviene da un referto allegato."""
+
+    description: str = Field(
+        description=(
+            "Descrizione concisa dell'entita' clinica, con valore e unita' se "
+            "presenti (es. 'Hb 12.4 g/dL', 'pregressa appendicectomia 2019')."
+        )
+    )
+    category: str | None = Field(
+        default=None,
+        description=(
+            "Tipo dell'entita': es. 'esame_laboratorio', 'patologia_remota', "
+            "'farmaco', 'diagnosi', 'parametro_vitale'."
+        ),
+    )
+    source_reference: SourceReference | None = Field(
+        default=None,
+        description=(
+            "Fonte documentale del dato. Popolala SOLO se l'entita' deriva da un "
+            "referto allegato (testo marcato [Referto ... | fonte_documento: ...]). "
+            "Lascia null se il dato proviene dalla chat o dai vocali del paziente."
+        ),
+    )
+
+
 class ClinicalSynthesis(BaseModel):
     """Output strutturato di `clinical_synthesizer`."""
 
@@ -214,6 +314,16 @@ class ClinicalSynthesis(BaseModel):
     red_flags: list[str] = Field(default_factory=list)
     livello_urgenza: Literal["alta", "media", "bassa"]
     sintesi_medica: str
+    # Visual Provenance: entita' cliniche oggettive con riferimento alla fonte
+    # documentale. `source_reference` valorizzato solo per dati estratti da
+    # referti allegati; null per dati raccolti dalla conversazione/vocali.
+    clinical_entities: list[ClinicalEntity] = Field(
+        default_factory=list,
+        description=(
+            "Entita' cliniche oggettive emerse (esami, valori, patologie, farmaci). "
+            "Per ognuna popola source_reference SOLO se proviene da un referto allegato."
+        ),
+    )
 
 
 # --------------------------- helper RAG (chunking + embeddings) ---------------------------
@@ -733,33 +843,23 @@ def _synthesize_clinical(messages: list[BaseMessage]) -> ClinicalSynthesis:
     return structured.invoke(messages)
 
 
-def _vision_extract_text(file_bytes: bytes, content_type: str) -> str:
-    """OCR via GPT-4o vision. Supporta `image/*`. Per `application/pdf`
-    ritorna un placeholder finche' non aggiungiamo conversione PDF->immagine
-    (followup PR). Il chiamante decide come gestirlo."""
-    ct = (content_type or "").lower().strip()
-    if ct == "application/pdf":
-        return (
-            "[Referto PDF allegato — OCR su PDF non ancora implementato in questo PR. "
-            "Chiedi al paziente di descrivere a voce o di inviare una foto della pagina rilevante.]"
-        )
-    if not ct.startswith("image/"):
-        return f"[Allegato non interpretabile come immagine: {ct or 'sconosciuto'}]"
+_OCR_PROMPT = (
+    "Estrai integralmente il contenuto clinico del referto in italiano. "
+    "Mantieni valori numerici, range di riferimento e diagnosi. "
+    "NON aggiungere commenti. Solo testo estratto."
+)
 
+
+def _vision_ocr_image_bytes(img_bytes: bytes, content_type: str) -> str:
+    """OCR di una singola immagine via GPT-4o vision. Usato sia per gli allegati
+    immagine sia per le pagine PDF renderizzate a PNG."""
     try:
-        b64 = base64.b64encode(file_bytes).decode("ascii")
-        data_url = f"data:{ct};base64,{b64}"
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        data_url = f"data:{content_type};base64,{b64}"
         llm = ChatOpenAI(model=VISION_MODEL, temperature=0.0, timeout=60)
         msg = HumanMessage(
             content=[
-                {
-                    "type": "text",
-                    "text": (
-                        "Estrai integralmente il contenuto clinico del referto in italiano. "
-                        "Mantieni valori numerici, range di riferimento e diagnosi. "
-                        "NON aggiungere commenti. Solo testo estratto."
-                    ),
-                },
+                {"type": "text", "text": _OCR_PROMPT},
                 {"type": "image_url", "image_url": {"url": data_url}},
             ]
         )
@@ -776,6 +876,65 @@ def _vision_extract_text(file_bytes: bytes, content_type: str) -> str:
         return f"[Errore OCR: {type(e).__name__}]"
 
 
+def _extract_pdf_text(file_bytes: bytes) -> str:
+    """Estrazione testo da PDF via PyMuPDF. Strategia ibrida per pagina:
+    - se la pagina ha testo nativo (PDF digitale) lo usa direttamente (zero costo);
+    - se la pagina e' scansionata (poco/niente testo) la renderizza a PNG e fa
+      OCR vision.
+    Cap a `PDF_MAX_PAGES` per contenere i costi. Solleva ImportError se PyMuPDF
+    non e' installato (gestito dal chiamante)."""
+    import fitz  # PyMuPDF; import lazy cosi' l'import del modulo non fallisce
+
+    parts: list[str] = []
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    try:
+        total = doc.page_count
+        n_pages = min(total, PDF_MAX_PAGES)
+        for i in range(n_pages):
+            page = doc.load_page(i)
+            native = (page.get_text() or "").strip()
+            if len(native) >= PDF_PAGE_MIN_TEXT_CHARS:
+                parts.append(f"[Pagina {i + 1}]\n{native}")
+            else:
+                pix = page.get_pixmap(dpi=PDF_RENDER_DPI)
+                png_bytes = pix.tobytes("png")
+                ocr = _vision_ocr_image_bytes(png_bytes, "image/png")
+                parts.append(f"[Pagina {i + 1} - OCR]\n{ocr}")
+        if total > n_pages:
+            parts.append(
+                f"[...{total - n_pages} pagine ulteriori non elaborate (cap {PDF_MAX_PAGES})]"
+            )
+    finally:
+        doc.close()
+    return "\n\n".join(p for p in parts if p.strip()).strip()
+
+
+def _vision_extract_text(file_bytes: bytes, content_type: str) -> str:
+    """Estrae testo clinico da un allegato. Supporta `image/*` (vision) e
+    `application/pdf` (PyMuPDF: testo nativo + OCR vision sulle pagine scansionate)."""
+    ct = (content_type or "").lower().strip()
+
+    if ct == "application/pdf":
+        try:
+            text = _extract_pdf_text(file_bytes)
+            return text or "[PDF senza testo estraibile]"
+        except ImportError:
+            print("[agent] PyMuPDF non installato: impossibile leggere il PDF", flush=True)
+            return (
+                "[Referto PDF allegato — lettura PDF non disponibile (PyMuPDF mancante). "
+                "Chiedi al paziente una foto della pagina rilevante.]"
+            )
+        except Exception as e:
+            print(f"[agent] ERRORE lettura PDF: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            return f"[Errore lettura PDF: {type(e).__name__}]"
+
+    if not ct.startswith("image/"):
+        return f"[Allegato non interpretabile come immagine: {ct or 'sconosciuto'}]"
+
+    return _vision_ocr_image_bytes(file_bytes, ct)
+
+
 # --------------------------- nodi del grafo ---------------------------
 
 def node_input_router(state: AgentState) -> dict:
@@ -783,67 +942,139 @@ def node_input_router(state: AgentState) -> dict:
     return {"turn_count": int(state.get("turn_count") or 0) + 1}
 
 
-def route_after_input(state: AgentState) -> str:
-    ct = (state.get("incoming_media_content_type") or "").lower().strip()
+def _incoming_media_list(state: AgentState) -> list[dict]:
+    """Lista normalizzata degli allegati del turno. Usa `incoming_media` se
+    presente, altrimenti ricostruisce dal singolo allegato legacy."""
+    media = state.get("incoming_media")
+    if media:
+        return [m for m in media if (m or {}).get("url")]
     url = (state.get("incoming_media_url") or "").strip()
-    if url and ct.startswith("audio/"):
+    if url:
+        return [{"url": url, "content_type": state.get("incoming_media_content_type") or ""}]
+    return []
+
+
+def route_after_input(state: AgentState) -> str:
+    media = _incoming_media_list(state)
+    if not media:
+        return "anamnesis_copilot"
+    # Routing sul primo allegato (su WhatsApp ce n'e' uno solo per messaggio).
+    ct = (media[0].get("content_type") or "").lower().strip()
+    if ct.startswith("audio/"):
         return "whisper_transcribe"
-    if url and (ct.startswith("image/") or ct == "application/pdf"):
+    if ct.startswith("image/") or ct == "application/pdf":
         return "vision_ocr"
+    # Allegato non audio/immagine/pdf: nessuna estrazione, va al copilot.
     return "anamnesis_copilot"
 
 
 def node_vision_ocr(state: AgentState) -> dict:
     """Scarica il referto, fa OCR via GPT-4o vision, archivia su bucket `referti`
     e appende l'estratto allo stato + come HumanMessage cosi' il copilot lo vede."""
-    url = state.get("incoming_media_url", "")
-    ct_hint = state.get("incoming_media_content_type", "")
     phone = state.get("phone", "") or ""
     msid = state.get("message_sid", "") or ""
 
-    file_bytes, dl_ct, dl_cd = download_twilio_media_requests(url)
-    if not file_bytes:
-        return {
-            "messages": [
-                HumanMessage(content="[Referto inviato dal paziente: download fallito]")
-            ],
-            "last_error": "vision_download_failed",
-        }
+    # Elabora TUTTI gli allegati immagine/PDF del turno (multi-documento).
+    media = [
+        m
+        for m in _incoming_media_list(state)
+        if not (m.get("content_type") or "").lower().strip().startswith("audio/")
+    ]
+    if not media:
+        return {}
 
-    ct_resolved = _normalize_content_type(dl_ct, ct_hint)
-
-    try:
-        object_path = _storage_relative_path("referti", phone, ct_resolved, dl_cd, msid)
-        upload_bytes_to_supabase_bucket("referti", object_path, file_bytes, ct_resolved)
-    except Exception as e:
-        print(f"[agent] ERRORE upload referto: {type(e).__name__}: {e}", flush=True)
-        traceback.print_exc()
-
-    extracted_text = _vision_extract_text(file_bytes, ct_resolved)
     docs = list(state.get("extracted_docs") or [])
-    docs.append(
-        {
+    pending: list[dict] = []
+    new_messages: list[BaseMessage] = []
+
+    for idx, item in enumerate(media):
+        url = (item.get("url") or "").strip()
+        ct_hint = item.get("content_type") or ""
+        if not url:
+            continue
+
+        file_bytes, dl_ct, dl_cd = download_twilio_media_requests(url)
+        if not file_bytes:
+            new_messages.append(
+                HumanMessage(content="[Referto inviato dal paziente: download fallito]")
+            )
+            continue
+
+        ct_resolved = _normalize_content_type(dl_ct, ct_hint)
+        # Path storage Supabase ({telefono}/{filename}, bucket `referti`): e' il
+        # riferimento di provenienza ("Visual Provenance") che il frontend usa
+        # per riaprire il referto esatto. Lo calcoliamo a prescindere dall'esito
+        # dell'upload; in fallback usiamo l'URL del media.
+        sid_for_path = f"{msid}-{idx}" if msid else msid
+        try:
+            object_path = _storage_relative_path(
+                "referti", phone, ct_resolved, dl_cd, sid_for_path
+            )
+        except Exception as e:
+            print(f"[agent] ERRORE path referto: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            object_path = None
+        try:
+            if object_path:
+                upload_bytes_to_supabase_bucket(
+                    "referti", object_path, file_bytes, ct_resolved
+                )
+        except Exception as e:
+            print(f"[agent] ERRORE upload referto: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+
+        provenance_ref = object_path or url
+
+        extracted_text = _vision_extract_text(file_bytes, ct_resolved)
+        doc = {
             "source_url": url,
+            "storage_path": object_path,
+            # Riferimento canonico di provenienza per il synthesizer/frontend.
+            "source_reference": provenance_ref,
             "content_type": ct_resolved,
             "extracted_text": extracted_text,
             "extracted_at": _utcnow_iso(),
+            "index_source_type": "referto_ocr",
+            "media_index": idx,
         }
-    )
+        docs.append(doc)
+        pending.append(doc)
+        label = "Referto allegato — OCR" if len(media) == 1 else f"Referto {idx + 1} — OCR"
+        # Header di provenienza inline cosi' il synthesizer puo' associare ogni
+        # valore al documento (e alla pagina, via i marcatori [Pagina N] del PDF).
+        header = f"[{label} | fonte_documento: {provenance_ref} | content_type: {ct_resolved}]"
+        new_messages.append(HumanMessage(content=f"{header}\n{extracted_text}"))
+
+    if not new_messages:
+        return {"last_error": "vision_download_failed"}
+
     return {
         "extracted_docs": docs,
-        "messages": [
-            HumanMessage(content=f"[Referto allegato — OCR]\n{extracted_text}")
-        ],
-        "needs_indexing": True,
+        "pending_index_docs": pending,
+        "messages": new_messages,
+        "needs_indexing": bool(pending),
     }
 
 
 def node_whisper_transcribe(state: AgentState) -> dict:
-    """Scarica l'audio, trascrive con Whisper, archivia su bucket `vocali`."""
-    url = state.get("incoming_media_url", "")
-    ct_hint = state.get("incoming_media_content_type", "")
+    """Scarica l'audio, trascrive con Whisper, archivia su bucket `vocali`.
+    Indicizza la trascrizione nel fascicolo: il contenuto vocale non finisce in
+    `conversazioni` (il webhook logga Body vuoto per gli audio), quindi senza
+    questo passaggio sarebbe invisibile al RAG."""
     phone = state.get("phone", "") or ""
     msid = state.get("message_sid", "") or ""
+
+    # Primo allegato audio del turno.
+    audio = next(
+        (
+            m
+            for m in _incoming_media_list(state)
+            if (m.get("content_type") or "").lower().strip().startswith("audio/")
+        ),
+        None,
+    )
+    url = (audio or {}).get("url") or state.get("incoming_media_url", "")
+    ct_hint = (audio or {}).get("content_type") or state.get("incoming_media_content_type", "")
 
     file_bytes, dl_ct, dl_cd = download_twilio_media_requests(url)
     if not file_bytes:
@@ -874,30 +1105,71 @@ def node_whisper_transcribe(state: AgentState) -> dict:
             ],
             "last_error": "whisper_empty",
         }
+
+    docs = list(state.get("extracted_docs") or [])
+    doc = {
+        "source_url": url,
+        "content_type": ct_resolved,
+        "extracted_text": transcript.strip(),
+        "extracted_at": _utcnow_iso(),
+        "index_source_type": "conversazione",
+    }
+    docs.append(doc)
     return {
+        "extracted_docs": docs,
+        "pending_index_docs": [doc],
+        "needs_indexing": True,
         "messages": [
             HumanMessage(content=f"[Vocale paziente — trascrizione]\n{transcript}")
         ],
     }
 
 
+def _human_message_text(m: BaseMessage) -> str:
+    """Testo di un HumanMessage (gestisce anche il formato multi-part vision)."""
+    if not isinstance(m, HumanMessage):
+        return ""
+    content = m.content
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return " ".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+    return ""
+
+
 def _last_human_text(messages: list[BaseMessage]) -> str:
     """Estrae il testo dell'ultimo HumanMessage utile come query RAG."""
     for m in reversed(messages or []):
-        if isinstance(m, HumanMessage):
-            content = m.content
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-            if isinstance(content, list):
-                # multi-part (vision): concatena le sole parti "text"
-                joined = " ".join(
-                    part.get("text", "")
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                ).strip()
-                if joined:
-                    return joined
+        text = _human_message_text(m)
+        if text:
+            return text
     return ""
+
+
+def _recent_human_text(
+    messages: list[BaseMessage],
+    max_turns: int = RAG_QUERY_TURNS,
+    max_chars: int = RAG_QUERY_MAX_CHARS,
+) -> str:
+    """Concatena le ultime `max_turns` battute del paziente per una query RAG piu'
+    ricca: cosi' anche un "si"/"da ieri" eredita il contesto dei turni precedenti.
+    Cap a `max_chars` per non gonfiare l'embedding con interi referti OCR."""
+    collected: list[str] = []
+    for m in reversed(messages or []):
+        text = _human_message_text(m)
+        if text:
+            collected.append(text)
+        if len(collected) >= max_turns:
+            break
+    collected.reverse()
+    query = "\n".join(collected).strip()
+    if len(query) > max_chars:
+        query = query[-max_chars:]
+    return query
 
 
 def node_retrieval(state: AgentState) -> dict:
@@ -909,11 +1181,16 @@ def node_retrieval(state: AgentState) -> dict:
     """
     pid = state.get("paziente_id") or ""
     messages = state.get("messages") or []
-    query = _last_human_text(messages)
+    query = _recent_human_text(messages)
     if not pid or not query:
         return {}
 
-    chunks = retrieve_relevant_chunks(pid, query)
+    chunks = retrieve_relevant_chunks(
+        pid,
+        query,
+        min_similarity=RAG_CHAT_MIN_SIMILARITY,
+        min_query_chars=RAG_CHAT_MIN_QUERY_CHARS,
+    )
     if not chunks:
         return {}
 
@@ -943,38 +1220,56 @@ def node_retrieval(state: AgentState) -> dict:
 
 def node_embed_and_index(state: AgentState) -> dict:
     """
-    Indicizza l'ultimo documento estratto (OCR / trascrizione) in
-    `anamnesi_documenti` per renderlo retrievable nei turni futuri. Si attiva
-    solo se il nodo a monte ha settato `needs_indexing=True`. Mai bloccante.
+    Indicizza in `anamnesi_documenti` TUTTI i documenti prodotti in questo turno
+    (OCR referti, trascrizioni vocali), non solo l'ultimo, per renderli
+    retrievable nei turni futuri e nel fascicolo lato medico. Si attiva solo se
+    un nodo a monte ha settato `needs_indexing=True`. Mai bloccante.
     """
     if not state.get("needs_indexing"):
         return {}
     pid = state.get("paziente_id") or ""
     mid = state.get("medico_id") or ""
-    docs = state.get("extracted_docs") or []
     msid = state.get("message_sid") or ""
-    if not pid or not mid or not docs:
-        return {"needs_indexing": False}
 
-    latest = docs[-1] or {}
-    text = (latest.get("extracted_text") or "").strip()
-    # Salta i marker di errore / placeholder che vision_ocr emette
-    skip_prefixes = ("[Errore", "[Referto PDF", "[Allegato non interpretabile", "[OCR vuoto")
-    if not text or text.startswith(skip_prefixes):
-        return {"needs_indexing": False}
+    # Indicizza i doc di questo turno; fallback all'ultimo doc per retro-compat.
+    pending = state.get("pending_index_docs")
+    if not pending:
+        docs = state.get("extracted_docs") or []
+        pending = [docs[-1]] if docs else []
 
-    index_document(
-        paziente_id=pid,
-        medico_id=mid,
-        source_type="referto_ocr",
-        source_id=msid or None,
-        text=text,
-        metadata={
-            "content_type": latest.get("content_type"),
-            "source_url": latest.get("source_url"),
-        },
-    )
-    return {"needs_indexing": False}
+    if not pid or not mid or not pending:
+        return {"needs_indexing": False, "pending_index_docs": []}
+
+    # Marker di errore / placeholder che NON vanno indicizzati.
+    skip_prefixes = ("[Errore", "[Referto PDF", "[Allegato non interpretabile", "[OCR vuoto", "[PDF senza testo")
+
+    multi = len(pending) > 1
+    for i, doc in enumerate(pending):
+        text = (doc.get("extracted_text") or "").strip()
+        if not text or text.startswith(skip_prefixes):
+            continue
+        # source_id = message_sid per il caso singolo (retro-compat); suffisso
+        # per-documento solo quando il turno porta piu' allegati.
+        if not msid:
+            source_id = None
+        elif multi:
+            source_id = f"{msid}-{doc.get('media_index', i)}"
+        else:
+            source_id = msid
+        index_document(
+            paziente_id=pid,
+            medico_id=mid,
+            source_type=doc.get("index_source_type") or "referto_ocr",
+            source_id=source_id,
+            text=text,
+            metadata={
+                "content_type": doc.get("content_type"),
+                "source_url": doc.get("source_url"),
+                "storage_path": doc.get("storage_path"),
+                "source_reference": doc.get("source_reference"),
+            },
+        )
+    return {"needs_indexing": False, "pending_index_docs": []}
 
 
 def node_anamnesis_copilot(state: AgentState) -> dict:
@@ -1045,30 +1340,11 @@ def node_clinical_synthesizer(state: AgentState) -> dict:
 
     synthesis_payload = synth.model_dump()
 
-    # Indicizza la sintesi per il RAG dei futuri turni / visite successive.
-    pid = state.get("paziente_id") or ""
-    mid = state.get("medico_id") or ""
-    msid = state.get("message_sid") or ""
-    if pid and mid:
-        synthesis_text = (
-            f"Chief complaint: {synth.chief_complaint}\n\n"
-            f"HPI: {synth.history_of_present_illness}\n\n"
-            f"Farmaci citati: {', '.join(synth.medications) if synth.medications else '-'}\n\n"
-            f"Red flags: {', '.join(synth.red_flags) if synth.red_flags else '-'}\n\n"
-            f"Urgenza: {synth.livello_urgenza}\n"
-            f"Sintesi: {synth.sintesi_medica}"
-        )
-        index_document(
-            paziente_id=pid,
-            medico_id=mid,
-            source_type="richiesta_sintesi",
-            source_id=msid or None,
-            text=synthesis_text,
-            metadata={
-                "livello_urgenza": synth.livello_urgenza,
-                "synthesized_at": _utcnow_iso(),
-            },
-        )
+    # L'indicizzazione RAG della sintesi NON avviene piu' qui: la `richiesta`
+    # viene inserita in `run_for_job` e il trigger DB (`trg_index_richieste`)
+    # accoda un job `index_document` con `source_id = richiesta.id`. Stessa
+    # chiave usata da `backfill_fascicolo`, quindi sorgente unica e idempotente
+    # (niente piu' chunk duplicati sintesi-inline vs trigger).
 
     closing_reply = (
         "Grazie. Ho preparato la sintesi per il medico, che ti rispondera' appena possibile."
@@ -1248,6 +1524,13 @@ def run_for_job(payload: dict) -> dict:
     media_ct = payload.get("media_content_type_0") or ""
     message_sid = payload.get("message_sid") or ""
 
+    # Lista allegati: preferisci `media` (multi-allegato), fallback al singolo
+    # campo legacy per i job gia' in coda / retro-compatibilita'.
+    incoming_media = payload.get("media")
+    if not incoming_media and media_url:
+        incoming_media = [{"url": media_url, "content_type": media_ct}]
+    incoming_media = [m for m in (incoming_media or []) if (m or {}).get("url")]
+
     if not from_phone:
         return {"status": "error", "reason": "missing_from_number"}
 
@@ -1264,8 +1547,10 @@ def run_for_job(payload: dict) -> dict:
         "phone": from_phone,
         "message_sid": message_sid,
         "incoming_body": body,
-        "incoming_media_url": media_url,
-        "incoming_media_content_type": media_ct,
+        "incoming_media_url": media_url or (incoming_media[0]["url"] if incoming_media else ""),
+        "incoming_media_content_type": media_ct
+        or (incoming_media[0].get("content_type", "") if incoming_media else ""),
+        "incoming_media": incoming_media,
         "messages": history,
         "extracted_docs": list(session_data.get("extracted_docs") or []),
         "turn_count": int(session_data.get("turn_count") or 0),
@@ -1310,6 +1595,10 @@ def run_for_job(payload: dict) -> dict:
                 riassunto_clinico=synthesis.get("sintesi_medica"),
                 urgenza=synthesis.get("livello_urgenza"),
                 url_media=None,
+                # Sintesi strutturata completa (incl. clinical_entities +
+                # source_reference) cosi' il frontend puo' offrire il bottone
+                # "apri referto" sulle entita' con provenienza documentale.
+                dati_clinici=synthesis,
             )
             synthesis_inserted = True
             _log_conversation_turn(

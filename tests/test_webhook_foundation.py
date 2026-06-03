@@ -122,6 +122,32 @@ def test_happy_path_enqueues_and_logs_user(client: TestClient) -> None:
     assert _user_logged_with_role_user(main._log_conversation_turn.call_args_list)
 
 
+def test_webhook_builds_media_list_for_multiple_attachments(client: TestClient) -> None:
+    """Fase 1: il webhook costruisce la lista `media` dagli allegati MediaUrlN
+    e la passa all'enqueue (multi-documento)."""
+    response = client.post(
+        "/webhook",
+        data={
+            "From": "whatsapp:+393331234567",
+            "Body": "Ecco i referti",
+            "MessageSid": "SM_MEDIA_001",
+            "NumMedia": "2",
+            "MediaUrl0": "https://api.twilio.com/m/0",
+            "MediaContentType0": "image/jpeg",
+            "MediaUrl1": "https://api.twilio.com/m/1",
+            "MediaContentType1": "application/pdf",
+        },
+    )
+    assert response.status_code == 200
+    assert main._enqueue_process_message_job.call_count == 1
+    kw = main._enqueue_process_message_job.call_args.kwargs
+    media = kw.get("media")
+    assert isinstance(media, list) and len(media) == 2
+    assert media[0]["url"] == "https://api.twilio.com/m/0"
+    assert media[0]["content_type"] == "image/jpeg"
+    assert media[1]["content_type"] == "application/pdf"
+
+
 def test_happy_path_falls_back_to_sync_when_enqueue_fails(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -205,3 +231,22 @@ def test_onboarding_activation_sends_gdpr_template_and_logs_user(
     assert main.insert_richiesta.call_count == 0
     assert main._enqueue_process_message_job.call_count == 0
     assert main.process_message.call_count == 0
+
+
+# --------------------------- Fase 0: normalize_urgenza ---------------------------
+
+def test_normalize_urgenza_maps_legacy_traffic_light() -> None:
+    """Le righe legacy con semaforo vanno mappate sui valori della dashboard."""
+    assert main.normalize_urgenza("ROSSO") == "alta"
+    assert main.normalize_urgenza("Giallo") == "media"
+    assert main.normalize_urgenza("verde") == "bassa"
+
+
+def test_normalize_urgenza_passes_through_valid_and_none() -> None:
+    assert main.normalize_urgenza("alta") == "alta"
+    assert main.normalize_urgenza("media") == "media"
+    assert main.normalize_urgenza("bassa") == "bassa"
+    assert main.normalize_urgenza(None) is None
+    assert main.normalize_urgenza("") == ""
+    # Valore inatteso: passa invariato (non lo inventiamo).
+    assert main.normalize_urgenza("sconosciuto") == "sconosciuto"
