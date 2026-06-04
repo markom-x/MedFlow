@@ -261,7 +261,14 @@ export function ChatSection({
     >
       <div
         ref={messagesContainerRef}
-        className="flex min-h-[400px] max-h-[60vh] flex-1 flex-col space-y-2 overflow-y-auto overscroll-contain p-4 md:space-y-3 md:px-6 md:py-4"
+        className={cn(
+          "flex min-h-0 flex-1 flex-col space-y-2 overflow-y-auto overscroll-contain p-4 md:space-y-3 md:px-6 md:py-4",
+          // Standalone variant needs explicit bounds; inside the CRM column the
+          // parent already constrains height, so let flex-1 + min-h-0 do the work
+          // (otherwise min-h-[400px] overflows short viewports and clips the last
+          // message).
+          !isCrm && "min-h-[400px] max-h-[60vh]"
+        )}
       >
         {chatRows.map((messaggio) => {
           const raw =

@@ -118,6 +118,21 @@ export function latestClinicalSummary(requests: RichiestaRow[]): string | null {
   return null;
 }
 
+/** Structured AI synthesis (dati_clinici) from the most recent summary row. */
+export function latestClinicalData(
+  requests: RichiestaRow[]
+): RichiestaRow["dati_clinici"] | null {
+  const sorted = [...requests].sort(
+    (x, y) =>
+      new Date(y.created_at).getTime() - new Date(x.created_at).getTime()
+  );
+  for (const r of sorted) {
+    const d = r.dati_clinici;
+    if (d && typeof d === "object") return d;
+  }
+  return null;
+}
+
 /** Most recent finalized request (carrying a clinical summary). */
 export function latestFinalizedRequest(
   requests: RichiestaRow[]

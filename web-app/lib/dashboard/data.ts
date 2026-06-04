@@ -8,7 +8,7 @@ export async function fetchRichieste(
   const { data, error } = await supabase
     .from("richieste")
     .select(
-      `id, created_at, stato, urgenza, riassunto_clinico, messaggio_originale, url_media, paziente_id,
+      `id, created_at, stato, urgenza, riassunto_clinico, messaggio_originale, url_media, paziente_id, dati_clinici,
        pazienti:paziente_id (id, nome, telefono, note_private)`
     )
     .order("created_at", { ascending: false })
