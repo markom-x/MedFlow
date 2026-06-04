@@ -104,7 +104,7 @@ export default function Home() {
               <h3 className="text-lg font-semibold text-slate-900">Ask the record</h3>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
                 The AI reads messages, voice notes and report photos or PDFs, then lets the
-                doctor query the patient&apos;s record in plain English.
+                doctor just ask the patient&apos;s record a question.
               </p>
             </article>
 
