@@ -36,7 +36,7 @@ def healthcheck_root() -> dict:
     return {
         "status": "ok",
         "service": "MedFlow API",
-        "build": "2026-06-04-fascicolo-fix",
+        "build": "2026-06-04-fascicolo-synthesize",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "supabase_configured": bool(
             os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -962,6 +962,50 @@ def insert_richiesta(
                 if val is not None and str(val).strip():
                     print(f"ERRORE:   {attr} = {val!r}", flush=True)
         traceback.print_exc()
+
+
+def patch_recent_inbound_richiesta_media(
+    paziente_id: str,
+    storage_path: str,
+) -> bool:
+    """
+    Aggiorna `url_media` sulla richiesta inbound più recente senza allegato
+    (bridge webhook o upload agent arrivato dopo l'INSERT iniziale).
+    """
+    if not supabase or not paziente_id or not (storage_path or "").strip():
+        return False
+    path = storage_path.strip()
+    try:
+        resp = (
+            supabase.table("richieste")
+            .select("id, url_media, messaggio_originale")
+            .eq("paziente_id", paziente_id)
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        for row in resp.data or []:
+            if row.get("url_media"):
+                continue
+            msg = (row.get("messaggio_originale") or "").strip()
+            if not msg:
+                continue
+            if "Clinical summary updated" in msg or "Sintesi clinica aggiornata" in msg:
+                continue
+            supabase.table("richieste").update({"url_media": path}).eq(
+                "id", row["id"]
+            ).execute()
+            print(
+                f"[DB] patch url_media richiesta={row['id']} path={path}",
+                flush=True,
+            )
+            return True
+    except Exception as e:
+        print(
+            f"[DB] patch url_media fallito: {type(e).__name__}: {e}",
+            flush=True,
+        )
+    return False
 
 
 def _extension_from_content_type(content_type: str) -> str:

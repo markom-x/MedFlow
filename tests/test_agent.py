@@ -986,7 +986,9 @@ def test_answer_fascicolo_query_grounds_on_chunks_and_returns_sources(
         PAZIENTE_ID, "qual e' l'ultimo valore di emoglobina?"
     )
 
-    assert out["answer"].startswith("Ultima emoglobina")
+    assert "12.4" in out["answer"]
+    assert "emoglobin" in out["answer"].lower()
+    assert "msgs" not in captured
     assert len(out["sources"]) == 2
     assert out["sources"][0]["source_type"] == "referto_ocr"
     assert out["sources"][0]["source_id"] == "SM_OCR_1"
@@ -997,13 +999,8 @@ def test_answer_fascicolo_query_grounds_on_chunks_and_returns_sources(
     assert rpc_kwargs["top_k"] == agent.FASCICOLO_TOP_K
     assert rpc_kwargs["min_similarity"] == agent.FASCICOLO_MIN_SIMILARITY
 
-    # Il contesto dei chunk e' iniettato nei messaggi LLM (grounding).
-    from langchain_core.messages import HumanMessage as HM, SystemMessage as SM
-
-    assert isinstance(captured["msgs"][0], SM)
-    human = next(m for m in captured["msgs"] if isinstance(m, HM))
-    assert "Emoglobina 12.4" in human.content
-    assert "emoglobina" in human.content.lower()
+    # Con dati OCR espliciti rispondiamo senza LLM (synthesis locale).
+    assert "msgs" not in captured
 
 
 def test_answer_fascicolo_query_llm_error_is_safe(
@@ -1035,10 +1032,13 @@ def test_answer_fascicolo_query_llm_error_is_safe(
     monkeypatch.setattr(agent, "_count_anamnesi_chunks", MagicMock(return_value=1))
     monkeypatch.setattr(agent, "_resolve_openai_client", lambda: MagicMock())
 
-    out = agent.answer_fascicolo_query(PAZIENTE_ID, "una domanda abbastanza lunga")
+    out = agent.answer_fascicolo_query(
+        PAZIENTE_ID, "what is the patient hemoglobin value"
+    )
     assert len(out["sources"]) == 1
-    assert "Emoglobina 12.4" in out["answer"]
-    assert "excerpt" in out["answer"].lower() or "relevant" in out["answer"].lower()
+    assert "12.4" in out["answer"]
+    assert "Excerpt 1" not in out["answer"]
+    assert "could not be generated" not in out["answer"].lower()
 
 
 # --------------------------- backfill_fascicolo ---------------------------

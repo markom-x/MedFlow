@@ -59,6 +59,7 @@ from main import (
     download_twilio_media_requests,
     get_paziente_by_phone,
     insert_richiesta,
+    patch_recent_inbound_richiesta_media,
     supabase,
     transcribe_audio_bytes_whisper,
     upload_bytes_to_supabase_bucket,
@@ -661,6 +662,225 @@ def _messages_to_openai_chat(messages: list[BaseMessage]) -> list[dict]:
     return out
 
 
+# Lab / OCR synthesis for Ask the record (no LLM required).
+_FASCICOLO_LAB_TESTS: list[tuple[str, str]] = [
+    ("hemoglobin", "hemoglobin"),
+    ("haemoglobin", "hemoglobin"),
+    ("hgb", "hemoglobin"),
+    ("hb ", "hemoglobin"),
+    ("emoglobina", "hemoglobin"),
+    ("serum amylase", "amylase"),
+    ("amylase", "amylase"),
+    ("amilasi", "amylase"),
+    ("serum lipase", "lipase"),
+    ("lipase", "lipase"),
+    ("lipasi", "lipase"),
+    ("white blood cells", "wbc"),
+    ("wbc", "wbc"),
+    ("leucociti", "wbc"),
+    ("c-reactive protein", "crp"),
+    ("crp", "crp"),
+    ("proteina c reattiva", "crp"),
+    ("alanine aminotransferase", "alt"),
+    ("alt", "alt"),
+    ("transaminasi", "alt"),
+    ("glucose", "glucose"),
+    ("glucosio", "glucose"),
+    ("creatinine", "creatinine"),
+    ("creatinina", "creatinine"),
+    ("platelet", "platelets"),
+    ("piastrine", "platelets"),
+]
+
+
+def _normalize_fascicolo_text(text: str) -> str:
+    """Flatten LaTeX/OCR noise so numeric patterns are easier to match."""
+    s = text or ""
+    s = re.sub(r"\$\s*([^$]+?)\s*\$", r"\1", s)
+    s = re.sub(r"\\text\{([^}]+)\}", r"\1", s)
+    s = re.sub(r"\\[a-zA-Z]+\s*", " ", s)
+    s = re.sub(r"[{}]", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _query_targets_lab_tests(query: str) -> set[str]:
+    q = _normalize_fascicolo_text((query or "").lower())
+    qwords = {w for w in re.split(r"\W+", q) if len(w) >= 2}
+    targets: set[str] = set()
+    for phrase, key in _FASCICOLO_LAB_TESTS:
+        p = phrase.strip().lower()
+        if p in q or (len(p) >= 3 and p.replace(" ", "") in q.replace(" ", "")):
+            targets.add(key)
+            continue
+        if " " in p:
+            continue
+        if p in qwords or (len(p) >= 3 and p in q):
+            targets.add(key)
+    if qwords & {"lab", "labs", "laboratory", "test", "tests", "emoglobina"}:
+        if "emoglobina" in qwords or "hemoglobin" in q or "hgb" in q:
+            targets.add("hemoglobin")
+    return targets
+
+
+def _extract_lab_values_from_blob(blob: str) -> dict[str, list[str]]:
+    """Map canonical test key -> list of numeric values (with units when found)."""
+    normalized = _normalize_fascicolo_text(blob)
+    lower = normalized.lower()
+    out: dict[str, list[str]] = {}
+
+    for phrase, key in _FASCICOLO_LAB_TESTS:
+        if key in out and out[key]:
+            continue
+        idx = lower.find(phrase.strip().lower())
+        if idx < 0:
+            continue
+        window = normalized[idx : idx + 700]
+        raw_vals = re.findall(
+            r"(\d+(?:\.\d+)?)\s*(?:U/L|mg/L|g/dL|mmol/L|/μL|×\s*10|10\^3)",
+            window,
+            re.I,
+        )
+        if not raw_vals:
+            raw_vals = re.findall(
+                r"(\d+(?:\.\d+)?)\s*(?:U/L|mg/L|g/dL)",
+                window,
+                re.I,
+            )
+        if not raw_vals:
+            continue
+        seen: set[str] = set()
+        vals: list[str] = []
+        for v in raw_vals[:4]:
+            if v not in seen:
+                seen.add(v)
+                vals.append(v)
+        if vals:
+            out[key] = vals
+    return out
+
+
+def _format_lab_answer(test_key: str, values: list[str]) -> str:
+    labels = {
+        "hemoglobin": "Hemoglobin",
+        "amylase": "Serum amylase",
+        "lipase": "Serum lipase",
+        "wbc": "White blood cell count (WBC)",
+        "crp": "C-Reactive protein (CRP)",
+        "alt": "ALT",
+        "glucose": "Glucose",
+        "creatinine": "Creatinine",
+        "platelets": "Platelets",
+    }
+    name = labels.get(test_key, test_key.replace("_", " ").title())
+    if len(values) >= 2:
+        return (
+            f"{name}: admission {values[0]}, discharge {values[1]} "
+            f"(values from the indexed discharge document)."
+        )
+    return f"{name}: {values[0]} (from the indexed record)."
+
+
+def _fascicolo_synthesize_from_chunks(query: str, chunks: list[dict]) -> str | None:
+    """
+    Turn retrieved RAG chunks into a short English answer without GPT.
+    Handles OCR lab tables (referto_ocr) and explicit negatives when a test
+    is absent from the record.
+    """
+    if not chunks:
+        return None
+
+    blob_parts: list[str] = []
+    has_ocr = False
+    for c in chunks[:8]:
+        content = (c.get("content") or "").strip()
+        if not content:
+            continue
+        if (c.get("source_type") or "") == "referto_ocr":
+            has_ocr = True
+        blob_parts.append(content)
+    blob = "\n".join(blob_parts)
+    if not blob.strip():
+        return None
+
+    targets = _query_targets_lab_tests(query)
+    labs = _extract_lab_values_from_blob(blob)
+
+    if targets:
+        lines: list[str] = []
+        missing: list[str] = []
+        for key in sorted(targets):
+            vals = list(labs.get(key) or [])
+            if not vals and key == "hemoglobin":
+                m = re.search(
+                    r"(?:emoglobina|hemoglobin|hgb)\s*[:=]?\s*(\d+(?:\.\d+)?)",
+                    blob,
+                    re.I,
+                )
+                if m:
+                    vals = [m.group(1)]
+            if vals:
+                lines.append(_format_lab_answer(key, vals))
+            else:
+                missing.append(key)
+
+        if lines:
+            answer = " ".join(lines)
+            if missing and has_ocr:
+                avail = [
+                    k
+                    for k in ("amylase", "lipase", "wbc", "crp", "alt", "hemoglobin")
+                    if labs.get(k)
+                ]
+                if avail:
+                    pretty = ", ".join(
+                        _format_lab_answer(k, labs[k]).split(":")[0] for k in avail[:5]
+                    )
+                    answer += (
+                        f" No {missing[0].replace('_', ' ')} value appears in the "
+                        f"indexed documents; other labs on file include: {pretty}."
+                    )
+            return answer
+
+        if has_ocr and missing:
+            avail = [
+                _format_lab_answer(k, v)
+                for k, v in labs.items()
+                if v
+            ][:5]
+            if avail:
+                return (
+                    f"No {missing[0].replace('_', ' ')} value appears in the indexed "
+                    f"record. From the uploaded clinical document: "
+                    + "; ".join(avail)
+                    + "."
+                )
+
+    # Generic: pull a short relevant snippet (not full excerpt dump).
+    qwords = {w for w in re.split(r"\W+", (query or "").lower()) if len(w) >= 4}
+    if qwords and has_ocr:
+        norm = _normalize_fascicolo_text(blob)
+        best_start = 0
+        best_score = 0
+        # Find window with most query word hits
+        step = 80
+        for i in range(0, max(1, len(norm) - 200), step):
+            window = norm[i : i + 280].lower()
+            score = sum(1 for w in qwords if w in window)
+            if score > best_score:
+                best_score = score
+                best_start = i
+        if best_score >= 1:
+            snippet = norm[best_start : best_start + 320].strip()
+            if len(snippet) > 40:
+                return (
+                    f"From the patient's indexed documents: …{snippet}… "
+                    "(Ask a specific lab name for structured values.)"
+                )
+
+    return None
+
+
 def _fascicolo_direct_answer(query: str, chunks: list[dict]) -> str | None:
     """
     Risposta immediata dai chunk RAG senza LLM: se il testo contiene gia' la
@@ -760,6 +980,9 @@ def _fascicolo_compose_record_answer(query: str, chunks: list[dict]) -> str | No
     """
     if not chunks:
         return None
+    synthesized = _fascicolo_synthesize_from_chunks(query, chunks)
+    if synthesized:
+        return synthesized
     temp = _fascicolo_direct_answer(query, chunks)
     if temp:
         return temp
@@ -809,20 +1032,26 @@ def _fascicolo_compose_record_answer(query: str, chunks: list[dict]) -> str | No
 def _fascicolo_excerpt_fallback(
     chunks: list[dict], query: str, *, llm_failed: bool = False
 ) -> str:
-    """Risposta senza LLM: estratti pertinenti dal RAG."""
-    if llm_failed:
-        intro = (
-            "The AI answer could not be generated right now. "
-            "Here are the most relevant excerpts from the record:"
-        )
-    else:
-        intro = "Relevant excerpts from the record for your question:"
-    lines = [intro, f'"{query}"', ""]
-    for i, c in enumerate(chunks[:5], start=1):
-        st = c.get("source_type") or "source"
-        content = (c.get("content") or "").strip()
-        if content:
-            lines.append(f"**Excerpt {i}** ({st}):\n{content}\n")
+    """Last resort: prefer structured synthesis; never dump multi-page OCR."""
+    composed = _fascicolo_synthesize_from_chunks(query, chunks)
+    if composed:
+        return composed
+    composed = _fascicolo_compose_record_answer(query, chunks)
+    if composed:
+        return composed
+
+    intro = (
+        "I could not synthesize a full answer from the record right now."
+        if llm_failed
+        else "Here is a short excerpt from the record:"
+    )
+    lines = [intro, ""]
+    c0 = chunks[0] if chunks else {}
+    content = _normalize_fascicolo_text((c0.get("content") or "").strip())
+    if content:
+        st = c0.get("source_type") or "source"
+        snippet = content[:500] + ("…" if len(content) > 500 else "")
+        lines.append(f"({st}) {snippet}")
     return "\n".join(lines).strip()
 
 
@@ -2085,6 +2314,12 @@ def run_for_job(payload: dict) -> dict:
         "last_invocation_at": _utcnow_iso(),
     }
     save_session(pid, new_phase, new_session_data)
+
+    for doc in final_state.get("extracted_docs") or []:
+        sp = (doc.get("storage_path") or "").strip()
+        if sp:
+            patch_recent_inbound_richiesta_media(pid, sp)
+            break
 
     return {
         "status": "ok",
