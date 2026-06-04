@@ -1,5 +1,5 @@
 import type { PatientProfile, PazienteNested, RichiestaRow } from "./types";
-import { cleanPhone, needsAttention, patientDisplayName } from "./format";
+import { cleanPhone, patientDisplayName } from "./format";
 import { AGENT_SUMMARY_MARKER } from "./constants";
 
 export type PatientBucket = {
@@ -73,19 +73,27 @@ export function groupRichiesteByPatient(rows: RichiestaRow[]): Map<string, Patie
   return map;
 }
 
+/** Latest activity timestamp for a patient (any `richieste` row). */
+function latestActivityMs(requests: RichiestaRow[]): number {
+  let max = 0;
+  for (const r of requests) {
+    const t = new Date(r.created_at).getTime();
+    if (!Number.isNaN(t) && t > max) max = t;
+  }
+  return max;
+}
+
+/** WhatsApp-style: most recently active patient first. */
 export function sortPatientIds(
   buckets: Map<string, PatientBucket>
 ): string[] {
   return [...buckets.keys()].sort((a, b) => {
     const ba = buckets.get(a)!;
     const bb = buckets.get(b)!;
-    const pa = needsAttention(ba.requests) ? 0 : 1;
-    const pb = needsAttention(bb.requests) ? 0 : 1;
-    if (pa !== pb) return pa - pb;
-    if (bb.requests.length !== ba.requests.length) {
-      return bb.requests.length - ba.requests.length;
-    }
-    return ba.profile.nomeDisplay.localeCompare(bb.profile.nomeDisplay, "it", {
+    const diff =
+      latestActivityMs(bb.requests) - latestActivityMs(ba.requests);
+    if (diff !== 0) return diff;
+    return ba.profile.nomeDisplay.localeCompare(bb.profile.nomeDisplay, "en", {
       sensitivity: "base",
     });
   });
