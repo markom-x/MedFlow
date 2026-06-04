@@ -201,29 +201,33 @@ def test_retry_duplicate_is_skipped(
     assert main._log_conversation_turn.call_count == 0
 
 
-def test_onboarding_activation_sends_gdpr_template_and_logs_user(
+def test_onboarding_activation_skips_gdpr_in_demo_mode(
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Test 3 — onboarding: comando attivazione su numero nuovo, GDPR non ancora
-    accettato. Il webhook deve inviare il template GDPR e loggare l'attivazione
-    come turno user.
+    Demo mode (MEDFLOW_SKIP_GDPR=1): attivazione collega il paziente, auto-consent
+    e invia subito il messaggio di benvenuto — niente template GDPR.
     """
+    monkeypatch.setattr(main, "set_paziente_gdpr_consent", MagicMock(return_value=True))
+    monkeypatch.setenv("MEDFLOW_SKIP_GDPR", "1")
+
     response = client.post(
         "/webhook",
         data={
             "From": "whatsapp:+393331234567",
-            "Body": f"attivazione {ATTIVAZIONE_UUID}",
+            "Body": f"Activation {ATTIVAZIONE_UUID}",
             "MessageSid": "SM_ACT_001",
             "NumMedia": "0",
         },
     )
 
     assert response.status_code == 200
-    assert main._send_gdpr_consent_prompt.call_count == 1
-    gdpr_call = main._send_gdpr_consent_prompt.call_args
-    assert gdpr_call.kwargs.get("paziente_id") == PAZIENTE_ID
-    assert gdpr_call.kwargs.get("medico_id") == MEDICO_ID
+    assert main._send_gdpr_consent_prompt.call_count == 0
+    assert main._send_whatsapp_reply_and_log.call_count >= 1
+    reply_text = main._send_whatsapp_reply_and_log.call_args.args[1]
+    assert "Activation complete" in reply_text
+    assert main.set_paziente_gdpr_consent.call_count >= 1
 
     assert main._log_conversation_turn.call_count >= 1
     assert _user_logged_with_role_user(main._log_conversation_turn.call_args_list)

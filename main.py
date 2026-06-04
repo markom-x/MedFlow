@@ -36,12 +36,13 @@ def healthcheck_root() -> dict:
     return {
         "status": "ok",
         "service": "MedFlow API",
-        "build": "2026-06-04-activation-gdpr-fix",
+        "build": "2026-06-04-demo-skip-gdpr",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "supabase_configured": bool(
             os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         ),
         "fascicolo_routes": ["/api/fascicolo/query", "/api/fascicolo/health"],
+        "demo_skips_gdpr": _demo_skips_gdpr(),
     }
 
 
@@ -82,6 +83,18 @@ ACTIVATION_ALREADY_LINKED_TEXT = (
     "You are already linked to your doctor on MedFlow. "
     "Send a message anytime — symptoms, voice notes, or medical documents."
 )
+
+
+def _demo_skips_gdpr() -> bool:
+    """
+    Demo/founder mode: skip WhatsApp GDPR template gate and auto-consent patients.
+    Set MEDFLOW_SKIP_GDPR=0 to re-enable the consent flow in production.
+    """
+    return os.getenv("MEDFLOW_SKIP_GDPR", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _jwt_role_hint(key: str | None) -> str:
@@ -753,7 +766,11 @@ def _create_paziente_for_medico(phone: str, medico_id: str) -> tuple[str | None,
     if not supabase:
         return None, None
     try:
-        payload = {"telefono": phone, "medico_id": medico_id, "gdpr_consent": False}
+        payload = {
+            "telefono": phone,
+            "medico_id": medico_id,
+            "gdpr_consent": _demo_skips_gdpr(),
+        }
         try:
             created = (
                 supabase.table("pazienti")
@@ -768,7 +785,7 @@ def _create_paziente_for_medico(phone: str, medico_id: str) -> tuple[str | None,
                 "telefono": phone,
                 "medico_id": medico_id,
                 "nome": "Paziente WhatsApp",
-                "gdpr_consent": False,
+                "gdpr_consent": _demo_skips_gdpr(),
             }
             created = (
                 supabase.table("pazienti")
@@ -862,13 +879,15 @@ def link_paziente_to_medico(
             supabase.table("pazienti").update({"medico_id": medico_id}).eq(
                 "id", paziente_id
             ).execute()
-            # PostgREST puo' restituire `data` vuoto anche con update riuscito.
+            if _demo_skips_gdpr():
+                set_paziente_gdpr_consent(str(paziente_id), True)
+                gdpr_consent = True
             return str(paziente_id), str(medico_id), gdpr_consent
 
         payload = {
             "telefono": from_number,
             "medico_id": medico_id,
-            "gdpr_consent": False,
+            "gdpr_consent": _demo_skips_gdpr(),
         }
         try:
             created = supabase.table("pazienti").insert(payload).execute()
@@ -877,7 +896,7 @@ def link_paziente_to_medico(
                 "telefono": from_number,
                 "medico_id": medico_id,
                 "nome": "Paziente WhatsApp",
-                "gdpr_consent": False,
+                "gdpr_consent": _demo_skips_gdpr(),
             }
             created = supabase.table("pazienti").insert(payload_with_default_name).execute()
 
@@ -1573,7 +1592,10 @@ def twilio_webhook(
                 only_if_current_null=True,
             )
 
-        if not linked_consent:
+        if _demo_skips_gdpr():
+            set_paziente_gdpr_consent(linked_pid, True)
+            linked_consent = True
+        elif not linked_consent:
             _send_gdpr_consent_prompt(
                 from_phone,
                 paziente_id=linked_pid,
@@ -1618,8 +1640,12 @@ def twilio_webhook(
             only_if_current_null=True,
         )
 
-    # --- 3) Pending GDPR (linked but consent missing) ---
-    if not gdpr_consent:
+    if _demo_skips_gdpr() and not gdpr_consent:
+        set_paziente_gdpr_consent(paziente_id, True)
+        gdpr_consent = True
+
+    # --- 3) Pending GDPR (linked but consent missing) — disabled in demo mode ---
+    if not _demo_skips_gdpr() and not gdpr_consent:
         if incoming_text.lower().strip() in {
             "accept",
             "i accept",

@@ -39,6 +39,9 @@ services:
       # Token condiviso con la dashboard per autenticare /api/fascicolo/query.
       - key: MEDFLOW_INTERNAL_TOKEN
         sync: false
+      # Demo: no WhatsApp GDPR gate; set to 0 for production consent flow.
+      - key: MEDFLOW_SKIP_GDPR
+        value: "1"
 
   - type: worker
     name: medflow-worker
@@ -73,3 +76,5 @@ services:
       # urgenza ROSSO/GIALLO/VERDE: non usarlo in prod.
       - key: WORKER_USE_LEGACY
         value: "0"
+      - key: MEDFLOW_SKIP_GDPR
+        value: "1"
