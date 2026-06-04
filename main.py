@@ -30,8 +30,19 @@ app = FastAPI(
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
-def healthcheck_root() -> dict[str, str]:
-    return {"status": "ok", "service": "MedFlow API"}
+def healthcheck_root() -> dict:
+    """Health + deploy check. After redeploy you should see `build` and
+    `openai_configured` (needed for Ask the record on this web service)."""
+    return {
+        "status": "ok",
+        "service": "MedFlow API",
+        "build": "2026-06-04-fascicolo-fix",
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "supabase_configured": bool(
+            os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        ),
+        "fascicolo_routes": ["/api/fascicolo/query", "/api/fascicolo/health"],
+    }
 
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
