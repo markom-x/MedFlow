@@ -55,9 +55,9 @@ def reset_graph_singleton(monkeypatch: pytest.MonkeyPatch):
 
 # --------------------------- routing ---------------------------
 
-def test_route_text_goes_to_copilot() -> None:
+def test_route_text_goes_to_intake() -> None:
     state = {"incoming_media_url": "", "incoming_media_content_type": ""}
-    assert agent.route_after_input(state) == "anamnesis_copilot"
+    assert agent.route_after_input(state) == "patient_intake"
 
 
 def test_route_audio_goes_to_whisper() -> None:
@@ -166,52 +166,29 @@ def test_pdf_missing_pymupdf_returns_graceful_placeholder(
 
 # --------------------------- nodi copilot / synthesizer ---------------------------
 
-def test_copilot_ask_sets_reply_and_phase(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = CopilotDecision(
-        action="ask",
-        message_to_patient="Da quanto tempo hai questo dolore?",
-        reasoning="serve durata",
-    )
-    monkeypatch.setattr(agent, "_decide_copilot_action", MagicMock(return_value=fake))
-
+def test_intake_first_contact_sends_welcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Passive intake: never asks clinical questions. First contact -> welcome,
+    always routes to the synthesizer (current_phase SYNTHESIZING)."""
     state = {
-        "messages": [HumanMessage(content="Ho mal di testa")],
-        "turn_count": 1,
+        "messages": [HumanMessage(content="Hi")],
+        "current_phase": "IDLE",
     }
-    out = agent.node_anamnesis_copilot(state)
+    out = agent.node_patient_intake(state)
 
-    assert out["reply_to_send"] == "Da quanto tempo hai questo dolore?"
-    assert out["current_phase"] == "COLLECTING_ANAMNESIS"
+    assert out["reply_to_send"] == agent.INTAKE_WELCOME_MESSAGE
+    assert out["current_phase"] == "SYNTHESIZING"
     assert any(isinstance(m, AIMessage) for m in out["messages"])
 
 
-def test_copilot_finalize_sets_synthesizing(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = CopilotDecision(action="finalize", reasoning="abbastanza info")
-    monkeypatch.setattr(agent, "_decide_copilot_action", MagicMock(return_value=fake))
-
+def test_intake_returning_patient_sends_ack(monkeypatch: pytest.MonkeyPatch) -> None:
     state = {
-        "messages": [HumanMessage(content="Ho mal di testa da 2 giorni, prendo tachipirina")],
-        "turn_count": 3,
+        "messages": [HumanMessage(content="Here is my blood test")],
+        "current_phase": "FINISHED",
     }
-    out = agent.node_anamnesis_copilot(state)
+    out = agent.node_patient_intake(state)
 
+    assert out["reply_to_send"] == agent.INTAKE_ACK_MESSAGE
     assert out["current_phase"] == "SYNTHESIZING"
-    assert "reply_to_send" not in out or out.get("reply_to_send") is None
-
-
-def test_copilot_force_finalize_at_max_turns(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Safety net: se turn_count >= soglia, force SYNTHESIZING senza chiamare l'LLM."""
-    mock_llm = MagicMock()
-    monkeypatch.setattr(agent, "_decide_copilot_action", mock_llm)
-
-    state = {
-        "messages": [HumanMessage(content="ciao")],
-        "turn_count": agent.MAX_TURNS_BEFORE_FORCE_FINALIZE,
-    }
-    out = agent.node_anamnesis_copilot(state)
-
-    assert out["current_phase"] == "SYNTHESIZING"
-    assert mock_llm.call_count == 0
 
 
 def test_synthesizer_produces_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,7 +208,9 @@ def test_synthesizer_produces_synthesis(monkeypatch: pytest.MonkeyPatch) -> None
     assert out["current_phase"] == "FINISHED"
     assert out["synthesis"]["livello_urgenza"] == "bassa"
     assert out["synthesis"]["chief_complaint"] == "Cefalea"
-    assert out["reply_to_send"]
+    # The synthesizer no longer replies to the patient: the intake node already
+    # acknowledged. The summary is produced for the doctor only.
+    assert out.get("reply_to_send") is None
 
 
 # --------------------------- persistenza Supabase ---------------------------
@@ -324,31 +303,43 @@ def test_run_for_job_returns_error_when_paziente_missing(
     assert out["reason"] == "paziente_not_found"
 
 
-def test_run_for_job_ask_flow(
+def test_run_for_job_passive_intake_acks_and_synthesizes(
     patch_run_helpers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Passive intake: every patient message gets a non-clinical acknowledgment
+    and refreshes the clinical summary (richiesta inserted for the doctor)."""
     monkeypatch.setattr(
         agent,
-        "_decide_copilot_action",
+        "_synthesize_clinical",
         MagicMock(
-            return_value=CopilotDecision(
-                action="ask",
-                message_to_patient="Da quanto tempo?",
+            return_value=ClinicalSynthesis(
+                chief_complaint="Cefalea",
+                history_of_present_illness="Mal di testa",
+                medications=[],
+                red_flags=[],
+                livello_urgenza="bassa",
+                sintesi_medica="Cefalea non complicata.",
             )
         ),
     )
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
+    monkeypatch.setattr(agent, "index_document", MagicMock(return_value=0))
 
     out = agent.run_for_job(_payload())
 
     assert out["status"] == "ok"
-    assert out["phase"] == "COLLECTING_ANAMNESIS"
+    assert out["phase"] == "FINISHED"
     assert out["sent_reply"] is True
-    assert out["synthesis_inserted"] is False
+    assert out["synthesis_inserted"] is True
     channels.deliver_to_patient.assert_called_once()
-    agent.insert_richiesta.assert_not_called()
-    agent.save_session.assert_called_once()
+    # The reply to the patient is a plain acknowledgment, never a clinical question.
+    sent_text = channels.deliver_to_patient.call_args.kwargs.get(
+        "text"
+    ) or channels.deliver_to_patient.call_args.args[1]
+    assert sent_text in (agent.INTAKE_WELCOME_MESSAGE, agent.INTAKE_ACK_MESSAGE)
+    agent.insert_richiesta.assert_called_once()
     saved_state = agent.save_session.call_args.args[1]
-    assert saved_state == "COLLECTING_ANAMNESIS"
+    assert saved_state == "FINISHED"
 
 
 def test_run_for_job_finalize_inserts_richiesta(
@@ -401,10 +392,15 @@ def test_run_for_job_vision_path_appends_extracted_doc(
     )
     monkeypatch.setattr(
         agent,
-        "_decide_copilot_action",
+        "_synthesize_clinical",
         MagicMock(
-            return_value=CopilotDecision(
-                action="ask", message_to_patient="Da quando hai questi valori?"
+            return_value=ClinicalSynthesis(
+                chief_complaint="Controllo esami",
+                history_of_present_illness="Emoglobina 12.4 g/dL",
+                medications=[],
+                red_flags=[],
+                livello_urgenza="bassa",
+                sintesi_medica="Esami nella norma.",
             )
         ),
     )
@@ -874,14 +870,18 @@ def test_run_for_job_text_path_invokes_retrieval_and_injects_context(
 
     captured_messages: dict = {}
 
-    def fake_decide(messages):
+    def fake_synth(messages):
         captured_messages["msgs"] = messages
-        return CopilotDecision(
-            action="ask",
-            message_to_patient="Hai gia' provato qualche farmaco?",
+        return ClinicalSynthesis(
+            chief_complaint="Cefalea ricorrente",
+            history_of_present_illness="Mal di testa tornato",
+            medications=[],
+            red_flags=[],
+            livello_urgenza="bassa",
+            sintesi_medica="Cefalea ricorrente.",
         )
 
-    monkeypatch.setattr(agent, "_decide_copilot_action", fake_decide)
+    monkeypatch.setattr(agent, "_synthesize_clinical", fake_synth)
     mock_retrieve = MagicMock(
         return_value=[
             {

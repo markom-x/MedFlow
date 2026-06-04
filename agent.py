@@ -76,6 +76,22 @@ from main import (
 # webhook already bridges into the dashboard chat.
 AGENT_SUMMARY_MARKER = "👨‍⚕️ You: 📋 Clinical summary updated"
 
+# Passive intake assistant (product design): the AI never interviews the
+# patient. The doctor is the one who asks questions (via "Ask the record"). The
+# patient just shares information and documents; the assistant acknowledges,
+# ingests/indexes everything, and keeps the clinical summary fresh.
+INTAKE_WELCOME_MESSAGE = (
+    "Hi! I'm your doctor's assistant. You can share anything that helps describe "
+    "your situation — your symptoms and how long they've lasted, photos or PDFs "
+    "of reports, lab results, or voice notes. I'll organise everything into your "
+    "medical record so your doctor can review it. I don't provide medical advice."
+)
+INTAKE_ACK_MESSAGE = (
+    "Thank you — I've added this to your medical record for your doctor. Feel "
+    "free to keep sharing details, report photos or PDFs, or voice notes. Your "
+    "doctor will review everything and follow up."
+)
+
 CHAT_MODEL = os.getenv("MEDFLOW_CHAT_MODEL", "gpt-4o")
 VISION_MODEL = os.getenv("MEDFLOW_VISION_MODEL", "gpt-4o")
 EMBEDDING_MODEL = os.getenv("MEDFLOW_EMBEDDING_MODEL", "text-embedding-3-small")
@@ -967,15 +983,15 @@ def _incoming_media_list(state: AgentState) -> list[dict]:
 def route_after_input(state: AgentState) -> str:
     media = _incoming_media_list(state)
     if not media:
-        return "anamnesis_copilot"
+        return "patient_intake"
     # Routing sul primo allegato (su WhatsApp ce n'e' uno solo per messaggio).
     ct = (media[0].get("content_type") or "").lower().strip()
     if ct.startswith("audio/"):
         return "whisper_transcribe"
     if ct.startswith("image/") or ct == "application/pdf":
         return "vision_ocr"
-    # Allegato non audio/immagine/pdf: nessuna estrazione, va al copilot.
-    return "anamnesis_copilot"
+    # Allegato non audio/immagine/pdf: nessuna estrazione, va all'intake.
+    return "patient_intake"
 
 
 def node_vision_ocr(state: AgentState) -> dict:
@@ -1282,55 +1298,31 @@ def node_embed_and_index(state: AgentState) -> dict:
     return {"needs_indexing": False, "pending_index_docs": []}
 
 
-def node_anamnesis_copilot(state: AgentState) -> dict:
-    """Core: il copilot decide ask vs finalize. Safety net su turn_count."""
-    turn_count = int(state.get("turn_count") or 0)
-
-    if turn_count >= MAX_TURNS_BEFORE_FORCE_FINALIZE:
-        print(
-            f"[agent] max turni raggiunto ({turn_count}>={MAX_TURNS_BEFORE_FORCE_FINALIZE}), force finalize.",
-            flush=True,
-        )
-        return {"current_phase": "SYNTHESIZING"}
-
-    history = state.get("messages") or []
-    llm_messages: list[BaseMessage] = [SystemMessage(content=ANAMNESIS_SYSTEM_PROMPT)]
-    llm_messages.extend(history)
-
-    try:
-        decision = _decide_copilot_action(llm_messages)
-    except Exception as e:
-        print(f"[agent] ERRORE LLM copilot: {type(e).__name__}: {e}", flush=True)
-        traceback.print_exc()
-        return {
-            "reply_to_send": (
-                "Mi spiace, sto avendo un problema tecnico. Riprova tra qualche minuto."
-            ),
-            "current_phase": state.get("current_phase") or "COLLECTING_ANAMNESIS",
-            "last_error": f"copilot_llm:{type(e).__name__}",
-        }
-
-    if decision.action == "finalize":
-        return {"current_phase": "SYNTHESIZING"}
-
-    reply = (decision.message_to_patient or "").strip()
-    if not reply:
-        reply = "Puoi descrivermi meglio cosa stai provando?"
+def node_patient_intake(state: AgentState) -> dict:
+    """
+    Passive intake: the assistant NEVER asks clinical questions. It just
+    acknowledges what the patient shared (warm, non-robotic) and routes to the
+    synthesizer, which refreshes the clinical summary so the doctor can query
+    the record. The doctor is the one who asks questions.
+    """
+    phase = state.get("current_phase") or "IDLE"
+    first_contact = phase in ("IDLE", "", None)
+    ack = INTAKE_WELCOME_MESSAGE if first_contact else INTAKE_ACK_MESSAGE
     return {
-        "messages": [AIMessage(content=reply)],
-        "reply_to_send": reply,
-        "current_phase": "COLLECTING_ANAMNESIS",
+        "messages": [AIMessage(content=ack)],
+        "reply_to_send": ack,
+        "current_phase": "SYNTHESIZING",
     }
 
 
-def route_after_copilot(state: AgentState) -> str:
-    if state.get("current_phase") == "SYNTHESIZING":
-        return "clinical_synthesizer"
-    return END
-
-
 def node_clinical_synthesizer(state: AgentState) -> dict:
-    """Produce il JSON strutturato per `richieste` e chiude la sessione."""
+    """
+    Refresh the structured clinical summary from the full history (conversation
+    + documents). Runs on every patient message. Does NOT send a reply to the
+    patient (the intake node already acknowledged): the summary is for the
+    doctor. The RAG indexing of the summary happens via the DB trigger on the
+    `richiesta` inserted in `run_for_job`.
+    """
     history = state.get("messages") or []
     llm_messages: list[BaseMessage] = [SystemMessage(content=SYNTHESIZER_SYSTEM_PROMPT)]
     llm_messages.extend(history)
@@ -1340,30 +1332,16 @@ def node_clinical_synthesizer(state: AgentState) -> dict:
     except Exception as e:
         print(f"[agent] ERRORE LLM synth: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
+        # Keep the intake acknowledgment already set; just skip the summary.
         return {
-            "current_phase": "COLLECTING_ANAMNESIS",
-            "reply_to_send": (
-                "Sto avendo un problema a riassumere le tue informazioni. Riprova piu' tardi."
-            ),
+            "current_phase": "FINISHED",
             "last_error": f"synth_llm:{type(e).__name__}",
         }
 
     synthesis_payload = synth.model_dump()
-
-    # L'indicizzazione RAG della sintesi NON avviene piu' qui: la `richiesta`
-    # viene inserita in `run_for_job` e il trigger DB (`trg_index_richieste`)
-    # accoda un job `index_document` con `source_id = richiesta.id`. Stessa
-    # chiave usata da `backfill_fascicolo`, quindi sorgente unica e idempotente
-    # (niente piu' chunk duplicati sintesi-inline vs trigger).
-
-    closing_reply = (
-        "Grazie. Ho preparato la sintesi per il medico, che ti rispondera' appena possibile."
-    )
     return {
         "synthesis": synthesis_payload,
         "current_phase": "FINISHED",
-        "reply_to_send": closing_reply,
-        "messages": [AIMessage(content=closing_reply)],
     }
 
 
@@ -1371,19 +1349,19 @@ def node_clinical_synthesizer(state: AgentState) -> dict:
 
 def build_graph():
     """
-    Topologia PR #4:
+    Topology (passive intake — the AI never interviews the patient):
 
         START -> input_router --cond--> { vision_ocr | whisper_transcribe | retrieval }
         vision_ocr         -> retrieval
         whisper_transcribe -> retrieval
         retrieval          -> embed_and_index
-        embed_and_index    -> anamnesis_copilot
-        anamnesis_copilot --cond--> { END | clinical_synthesizer }
+        embed_and_index    -> patient_intake
+        patient_intake     -> clinical_synthesizer
         clinical_synthesizer -> END
 
-    `route_after_input` ritorna il valore "anamnesis_copilot" anche per la via
-    testo, ma la conditional edge lo mappa a "retrieval" (entry point della
-    pipeline RAG -> indexing -> copilot).
+    `route_after_input` returns "patient_intake" for the text path too, but the
+    conditional edge maps it to "retrieval" (entry point of the
+    RAG -> indexing -> intake -> summary pipeline).
     """
     g = StateGraph(AgentState)
     g.add_node("input_router", node_input_router)
@@ -1391,7 +1369,7 @@ def build_graph():
     g.add_node("whisper_transcribe", node_whisper_transcribe)
     g.add_node("retrieval", node_retrieval)
     g.add_node("embed_and_index", node_embed_and_index)
-    g.add_node("anamnesis_copilot", node_anamnesis_copilot)
+    g.add_node("patient_intake", node_patient_intake)
     g.add_node("clinical_synthesizer", node_clinical_synthesizer)
 
     g.add_edge(START, "input_router")
@@ -1401,22 +1379,15 @@ def build_graph():
         {
             "vision_ocr": "vision_ocr",
             "whisper_transcribe": "whisper_transcribe",
-            # via testo: salta direttamente alla pipeline RAG.
-            "anamnesis_copilot": "retrieval",
+            # text path: jump straight to the RAG pipeline.
+            "patient_intake": "retrieval",
         },
     )
     g.add_edge("vision_ocr", "retrieval")
     g.add_edge("whisper_transcribe", "retrieval")
     g.add_edge("retrieval", "embed_and_index")
-    g.add_edge("embed_and_index", "anamnesis_copilot")
-    g.add_conditional_edges(
-        "anamnesis_copilot",
-        route_after_copilot,
-        {
-            "clinical_synthesizer": "clinical_synthesizer",
-            END: END,
-        },
-    )
+    g.add_edge("embed_and_index", "patient_intake")
+    g.add_edge("patient_intake", "clinical_synthesizer")
     g.add_edge("clinical_synthesizer", END)
 
     return g.compile()

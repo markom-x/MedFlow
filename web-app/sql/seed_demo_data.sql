@@ -20,8 +20,9 @@
 --     this seed, run `python backfill_index.py` to populate anamnesi_documenti
 --     so the "Ask the record" query has indexed content.
 --
--- Run once in the Supabase SQL Editor as the postgres role. Idempotent
--- (ON CONFLICT DO NOTHING on fixed ids). Reversible by deleting these ids.
+-- Run in the Supabase SQL Editor as the postgres role. Safe to re-run: it
+-- first DELETES the demo patient's rows (so it always overwrites any older,
+-- e.g. Italian, seed) and then re-inserts the English data.
 
 -- 1) Demo doctor. If `medici` has extra NOT NULL columns (e.g. name, email),
 --    add them here. Usually the practice doctor already exists -> no-op.
@@ -29,7 +30,22 @@ INSERT INTO public.medici (id)
 VALUES ('0aec5fee-921d-43bf-87b6-c4019182c742')
 ON CONFLICT (id) DO NOTHING;
 
--- 2) Demo patient (separate from the founder, who will activate their own number).
+-- 1b) Clean any previous demo rows for this patient so re-running the seed
+--     fully replaces stale content (including old Italian summaries and their
+--     indexed RAG chunks). Only touches the demo patient, never real ones.
+DELETE FROM public.richieste
+WHERE paziente_id = 'a1b2c3d4-0000-4000-8000-000000000001';
+
+DO $$
+BEGIN
+  IF to_regclass('public.anamnesi_documenti') IS NOT NULL THEN
+    DELETE FROM public.anamnesi_documenti
+    WHERE paziente_id = 'a1b2c3d4-0000-4000-8000-000000000001';
+  END IF;
+END $$;
+
+-- 2) Demo patient (separate from the founder, who will activate their own
+--    number). Upsert so a re-run resets the English name/state.
 INSERT INTO public.pazienti (id, nome, telefono, medico_id, gdpr_consent, session_state)
 VALUES (
   'a1b2c3d4-0000-4000-8000-000000000001',
@@ -39,7 +55,11 @@ VALUES (
   true,
   'FINISHED'
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE
+  SET nome = EXCLUDED.nome,
+      medico_id = EXCLUDED.medico_id,
+      gdpr_consent = EXCLUDED.gdpr_consent,
+      session_state = EXCLUDED.session_state;
 
 -- 3) The WhatsApp conversation, seeded as `richieste` rows so it shows in the
 --    dashboard chat. Patient = left bubble; "👨‍⚕️ You:" = right bubble.

@@ -10,6 +10,7 @@ import {
   isAllegatoMultimedialePlaceholder,
 } from "@/lib/dashboard/message-text";
 import { SignedPatientMedia } from "@/components/dashboard/signed-patient-media";
+import { AGENT_SUMMARY_MARKER } from "@/lib/dashboard/constants";
 import { urlLooksLikeAudio, urlLooksLikePdf } from "@/lib/dashboard/media";
 import type { RichiestaRow } from "@/lib/dashboard/types";
 import { getSupabaseAuthBrowserClient } from "@/lib/supabase/auth-browser";
@@ -179,7 +180,15 @@ export function ChatSection({
     };
   }, [pazienteId]);
 
-  const chatRows = useMemo(() => sortByCreatedAt(messages), [messages]);
+  const chatRows = useMemo(
+    () =>
+      sortByCreatedAt(messages).filter(
+        // The AI clinical summary is shown in the dedicated card (and indexed
+        // for "Ask the record"), not as a chat bubble.
+        (m) => (m.messaggio_originale ?? "").trim() !== AGENT_SUMMARY_MARKER
+      ),
+    [messages]
+  );
 
   const messagesScrollSignature = useMemo(
     () => chatRows.map((m) => m.id).join(","),

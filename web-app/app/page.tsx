@@ -44,17 +44,20 @@ export default function Home() {
         <section className="pb-12 pt-12 md:pb-20 md:pt-20">
           <div className="relative max-w-4xl">
             <p className="mb-4 inline-flex items-center rounded-full border border-slate-200/80 bg-white/60 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-slate-600 shadow-sm backdrop-blur-sm">
-              Clinical triage · WhatsApp · AI
+              Patient record · WhatsApp · AI
             </p>
             <h1 className="text-[2.5rem] font-bold leading-[1.05] tracking-tight text-slate-900 sm:text-5xl md:text-6xl lg:text-7xl">
-              AI triage{" "}
+              An intelligent patient record,{" "}
               <span className="bg-gradient-to-r from-violet-600 via-blue-600 to-cyan-600 bg-clip-text text-transparent">
-                for the modern doctor.
+                built over WhatsApp.
               </span>
             </h1>
             <p className="mt-6 max-w-2xl text-base leading-relaxed text-slate-600 md:text-xl md:leading-relaxed">
-              Turn your patients&apos; WhatsApp messages into structured clinical records.
-              Save hours of work every day, fully securely.
+              Patients simply send their symptoms, reports and lab results on WhatsApp —
+              the app they already use every day. No new app, no sign-up, nothing to learn,
+              so even older or less tech-savvy patients can reach their doctor without
+              friction. The AI organises everything into a clinical record the doctor can
+              question in plain English.
             </p>
             <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center">
               <Link
@@ -89,10 +92,10 @@ export default function Home() {
               <div className="mb-5 inline-flex rounded-2xl border border-blue-100/80 bg-gradient-to-br from-blue-50 to-white p-3 text-blue-600 shadow-sm transition group-hover:scale-105">
                 <MessageCircle className="size-5" />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">No app to download</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Just WhatsApp, no app</h3>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                Patients message your WhatsApp virtual assistant. Zero friction,
-                maximum accessibility.
+                Patients use the chat they already know. No download, no account —
+                accessible even to elderly and less tech-savvy patients.
               </p>
             </article>
 
@@ -100,10 +103,10 @@ export default function Home() {
               <div className="mb-5 inline-flex rounded-2xl border border-violet-100/80 bg-gradient-to-br from-violet-50 to-white p-3 text-violet-600 shadow-sm transition group-hover:scale-105">
                 <BrainCircuit className="size-5" />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">AI data extraction</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Ask the record</h3>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                Our clinical engine reads the messages and generates triage records with
-                key findings and red flags.
+                The AI reads messages, voice notes and report photos or PDFs, then lets the
+                doctor query the patient&apos;s record in plain English.
               </p>
             </article>
 

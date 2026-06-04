@@ -211,7 +211,7 @@ export function FlowPreview() {
             >
               <div className="mb-4 flex items-center justify-between gap-2 border-b border-slate-200/60 pb-3">
                 <span className="text-xs font-bold tracking-tight text-slate-800">MedFlow</span>
-                <span className="text-[10px] font-medium text-slate-400">Triage</span>
+                <span className="text-[10px] font-medium text-slate-400">Record</span>
               </div>
 
               <motion.div variants={rowReveal} className="mb-4">

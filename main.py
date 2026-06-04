@@ -1513,7 +1513,7 @@ def twilio_webhook(
             if updated:
                 _send_whatsapp_reply_and_log(
                     from_phone,
-                    "Thank you! You can now describe your symptoms.",
+                    "Thank you! You can now share your symptoms, reports and any documents (photos, PDFs or voice notes) for your doctor.",
                     paziente_id=paziente_id,
                     medico_id=medico_id,
                 )

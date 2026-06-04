@@ -40,7 +40,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="flex min-h-dvh min-h-0 flex-col bg-slate-50">
+    <div className="flex h-dvh flex-col overflow-hidden bg-slate-50">
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 md:px-6">
         <div className="min-w-0">
           <h1 className="truncate text-base font-semibold text-slate-900 md:text-lg">

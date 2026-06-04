@@ -1,5 +1,6 @@
 import type { PatientProfile, PazienteNested, RichiestaRow } from "./types";
 import { cleanPhone, needsAttention, patientDisplayName } from "./format";
+import { AGENT_SUMMARY_MARKER } from "./constants";
 
 export type PatientBucket = {
   profile: PatientProfile;
@@ -95,7 +96,11 @@ export function lastMessagePreview(requests: RichiestaRow[]): string {
     (x, y) =>
       new Date(y.created_at).getTime() - new Date(x.created_at).getTime()
   );
-  const raw = sorted[0]?.messaggio_originale?.trim();
+  // Skip the AI clinical-summary rows: they are not chat messages.
+  const lastMessage = sorted.find(
+    (r) => (r.messaggio_originale ?? "").trim() !== AGENT_SUMMARY_MARKER
+  );
+  const raw = lastMessage?.messaggio_originale?.trim();
   if (!raw) return "No messages";
   const max = 72;
   return raw.length > max ? `${raw.slice(0, max)}…` : raw;
