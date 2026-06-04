@@ -8,6 +8,7 @@ import { formatCreatedAt, isMedicoMessage } from "@/lib/dashboard/format";
 import {
   bubbleMessageText,
   isAllegatoMultimedialePlaceholder,
+  isSubstantiveChatText,
 } from "@/lib/dashboard/message-text";
 import { SignedPatientMedia } from "@/components/dashboard/signed-patient-media";
 import { AGENT_SUMMARY_MARKER } from "@/lib/dashboard/constants";
@@ -276,11 +277,13 @@ export function ChatSection({
           const medico = isMedicoMessage(messaggio.messaggio_originale);
           const text = bubbleMessageText(raw, medico);
           const u = messaggio.url_media?.trim() || null;
-          const isAudio = Boolean(u && urlLooksLikeAudio(u));
-          const isPdf = Boolean(u && urlLooksLikePdf(u));
+          /** Do not render media UI on long text rows (bad legacy url_media patch). */
+          const showAsAttachment = Boolean(u) && !isSubstantiveChatText(text);
+          const isAudio = Boolean(showAsAttachment && urlLooksLikeAudio(u));
+          const isPdf = Boolean(showAsAttachment && urlLooksLikePdf(u));
           /** referti / immagini: url valorizzato e non audio né PDF */
           const isImageOrReferto =
-            Boolean(u) && !isAudio && !isPdf;
+            Boolean(showAsAttachment) && !isAudio && !isPdf;
           const showTextBelowImage =
             isImageOrReferto &&
             text.trim().length > 0 &&

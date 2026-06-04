@@ -6,6 +6,20 @@ export function isAllegatoMultimedialePlaceholder(text: string): boolean {
   return t === "[Media attachment]" || t === "[Allegato Multimediale]";
 }
 
+/**
+ * True when the bubble is real patient/doctor prose, not a filename-only caption.
+ * Used to avoid showing the PDF card when `url_media` was patched onto a text row by mistake.
+ */
+export function isSubstantiveChatText(text: string): boolean {
+  const t = text.trim();
+  if (!t || isAllegatoMultimedialePlaceholder(t)) return false;
+  if (t.length > 100) return true;
+  if (/\.(pdf|png|jpe?g|webp|gif|ogg|opus)$/i.test(t) && !t.includes(" ")) {
+    return false;
+  }
+  return t.includes(" ");
+}
+
 /** Text shown in the bubble (without the operator prefix for doctor messages). */
 export function bubbleMessageText(raw: string, isMedico: boolean): string {
   const t = raw.trim() || "[Empty message]";

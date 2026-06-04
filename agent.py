@@ -2441,11 +2441,22 @@ def run_for_job(payload: dict) -> dict:
     }
     save_session(pid, new_phase, new_session_data)
 
-    for doc in final_state.get("extracted_docs") or []:
-        sp = (doc.get("storage_path") or "").strip()
-        if sp:
-            patch_recent_inbound_richiesta_media(pid, sp)
-            break
+    # Collega url_media solo se QUESTO job aveva allegati Twilio (non riusare PDF
+    # vecchi in session_data su messaggi di solo testo).
+    if incoming_media:
+        media_urls = {
+            (m.get("url") or "").strip()
+            for m in incoming_media
+            if (m.get("url") or "").strip()
+        }
+        for doc in reversed(final_state.get("extracted_docs") or []):
+            sp = (doc.get("storage_path") or "").strip()
+            if not sp:
+                continue
+            src = (doc.get("source_url") or "").strip()
+            if src and src in media_urls:
+                patch_recent_inbound_richiesta_media(pid, sp)
+                break
 
     return {
         "status": "ok",

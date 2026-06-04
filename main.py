@@ -36,7 +36,7 @@ def healthcheck_root() -> dict:
     return {
         "status": "ok",
         "service": "MedFlow API",
-        "build": "2026-06-04-demo-skip-gdpr",
+        "build": "2026-06-04-fix-text-as-pdf",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "supabase_configured": bool(
             os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -1030,6 +1030,30 @@ def insert_richiesta(
         traceback.print_exc()
 
 
+_MEDIA_ONLY_PLACEHOLDERS = frozenset(
+    {"[Media attachment]", "[Allegato Multimediale]", "[Vocale - trascrizione non disponibile]"}
+)
+
+
+def _richiesta_row_expects_media_patch(messaggio: str) -> bool:
+    """
+    True solo per righe che rappresentano un allegato (placeholder o solo nome file),
+    non per messaggi di testo lunghi del paziente.
+    """
+    t = (messaggio or "").strip()
+    if not t:
+        return True
+    if t in _MEDIA_ONLY_PLACEHOLDERS:
+        return True
+    if len(t) <= 120 and re.match(
+        r"^[\w.\- ]+\.(pdf|png|jpe?g|webp|gif|ogg|opus)$",
+        t,
+        re.I,
+    ):
+        return True
+    return False
+
+
 def patch_recent_inbound_richiesta_media(
     paziente_id: str,
     storage_path: str,
@@ -1057,6 +1081,13 @@ def patch_recent_inbound_richiesta_media(
             if not msg:
                 continue
             if "Clinical summary updated" in msg or "Sintesi clinica aggiornata" in msg:
+                continue
+            if not _richiesta_row_expects_media_patch(msg):
+                print(
+                    f"[DB] patch url_media skip: richiesta={row['id']} "
+                    "e' testo, non allegato.",
+                    flush=True,
+                )
                 continue
             supabase.table("richieste").update({"url_media": path}).eq(
                 "id", row["id"]
