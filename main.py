@@ -36,7 +36,7 @@ def healthcheck_root() -> dict:
     return {
         "status": "ok",
         "service": "MedFlow API",
-        "build": "2026-06-04-fascicolo-polish",
+        "build": "2026-06-04-activation-gdpr-fix",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "supabase_configured": bool(
             os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -65,6 +65,23 @@ supabase: Client | None = (
 
 # Twilio Content Template (GDPR) senza variabili.
 GDPR_CONSENT_WHATSAPP_TEMPLATE_SID = "HXa9cb1f2bbffe1e2a078daf05ad19a956"
+
+GDPR_CONSENT_PLAIN_TEXT = (
+    "Thanks for activating MedFlow with your doctor. "
+    "Before we can process your symptoms and documents, we need your consent.\n\n"
+    "Please reply with exactly: I accept\n"
+    "(Italian: accetto)"
+)
+
+ACTIVATION_COMPLETE_TEXT = (
+    "Activation complete. You can now send symptoms, voice notes, photos or PDFs "
+    "to your doctor on this chat."
+)
+
+ACTIVATION_ALREADY_LINKED_TEXT = (
+    "You are already linked to your doctor on MedFlow. "
+    "Send a message anytime — symptoms, voice notes, or medical documents."
+)
 
 
 def _jwt_role_hint(key: str | None) -> str:
@@ -463,10 +480,11 @@ def _send_whatsapp_template(to_number: str, template_sid: str):
             content_sid=template_sid,
         )
         print(f"TWILIO TEMPLATE OK: SID {message.sid}", flush=True)
+        return True
     except Exception as e:
-        print("ERRORE invio WhatsApp template Twilio: ")
+        print(f"ERRORE invio WhatsApp template Twilio: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
-        raise e
+        return False
 
 
 def _claim_message_sid(message_sid: str) -> bool:
@@ -590,14 +608,47 @@ def _send_whatsapp_template_and_log(
     come `assistant_bot` con `content=None` e `metadata={"template_sid": ...}`.
     Non modifica `_send_whatsapp_template`.
     """
-    _send_whatsapp_template(to_number, template_sid)
+    ok = _send_whatsapp_template(to_number, template_sid)
     if paziente_id and medico_id:
+        meta: dict = {"template_sid": template_sid, "template_sent": ok}
+        _log_conversation_turn(
+            paziente_id=paziente_id,
+            medico_id=medico_id,
+            role="assistant_bot",
+            content=None if ok else GDPR_CONSENT_PLAIN_TEXT,
+            metadata=meta,
+        )
+
+
+def _send_gdpr_consent_prompt(
+    to_number: str,
+    *,
+    paziente_id: str,
+    medico_id: str,
+) -> None:
+    """Always sends readable plain text; template is best-effort (may fail outside 24h window)."""
+    _send_whatsapp_reply_and_log(
+        to_number,
+        GDPR_CONSENT_PLAIN_TEXT,
+        paziente_id=paziente_id,
+        medico_id=medico_id,
+    )
+    ok = _send_whatsapp_template(to_number, GDPR_CONSENT_WHATSAPP_TEMPLATE_SID)
+    if ok:
         _log_conversation_turn(
             paziente_id=paziente_id,
             medico_id=medico_id,
             role="assistant_bot",
             content=None,
-            metadata={"template_sid": template_sid},
+            metadata={
+                "template_sid": GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
+                "template_sent": True,
+            },
+        )
+    else:
+        print(
+            "[GDPR] Template non inviato; il paziente ha ricevuto solo il messaggio testuale.",
+            flush=True,
         )
 
 
@@ -808,15 +859,11 @@ def link_paziente_to_medico(
             row = existing.data[0]
             paziente_id = row.get("id")
             gdpr_consent = bool(row.get("gdpr_consent"))
-            updated = (
-                supabase.table("pazienti")
-                .update({"medico_id": medico_id})
-                .eq("id", paziente_id)
-                .execute()
-            )
-            if getattr(updated, "data", None):
-                return str(paziente_id), str(medico_id), gdpr_consent
-            return None, None, False
+            supabase.table("pazienti").update({"medico_id": medico_id}).eq(
+                "id", paziente_id
+            ).execute()
+            # PostgREST puo' restituire `data` vuoto anche con update riuscito.
+            return str(paziente_id), str(medico_id), gdpr_consent
 
         payload = {
             "telefono": from_number,
@@ -1527,21 +1574,20 @@ def twilio_webhook(
             )
 
         if not linked_consent:
-            _send_whatsapp_template_and_log(
-                to_number=from_phone,
-                template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
+            _send_gdpr_consent_prompt(
+                from_phone,
                 paziente_id=linked_pid,
                 medico_id=linked_mid,
             )
             print(
-                "[GDPR] After activation: consent missing, GDPR template sent, stopping.",
+                "[GDPR] After activation: consent missing, plain+template prompt sent.",
                 flush=True,
             )
             return Response(content=twiml, media_type="application/xml")
 
         _send_whatsapp_reply_and_log(
             from_phone,
-            "Activation complete",
+            ACTIVATION_COMPLETE_TEXT,
             paziente_id=linked_pid,
             medico_id=linked_mid,
         )
@@ -1605,14 +1651,13 @@ def twilio_webhook(
                 )
             return Response(content=twiml, media_type="application/xml")
 
-        _send_whatsapp_template_and_log(
-            to_number=from_phone,
-            template_sid=GDPR_CONSENT_WHATSAPP_TEMPLATE_SID,
+        _send_gdpr_consent_prompt(
+            from_phone,
             paziente_id=paziente_id,
             medico_id=medico_id,
         )
         print(
-            "[GDPR] Consenso mancante: template reinviato, messaggio non processato.",
+            "[GDPR] Consenso mancante: prompt GDPR reinviato, messaggio non processato.",
             flush=True,
         )
         return Response(content=twiml, media_type="application/xml")

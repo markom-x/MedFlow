@@ -66,6 +66,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(main, "_log_conversation_turn", MagicMock(return_value=None))
     monkeypatch.setattr(main, "_send_whatsapp_reply_and_log", MagicMock(return_value=None))
     monkeypatch.setattr(main, "_send_whatsapp_template_and_log", MagicMock(return_value=None))
+    monkeypatch.setattr(main, "_send_whatsapp_template", MagicMock(return_value=True))
+    monkeypatch.setattr(main, "_send_gdpr_consent_prompt", MagicMock(return_value=None))
     monkeypatch.setattr(
         main, "_enqueue_process_message_job", MagicMock(return_value=True)
     )
@@ -218,12 +220,10 @@ def test_onboarding_activation_sends_gdpr_template_and_logs_user(
     )
 
     assert response.status_code == 200
-    assert main._send_whatsapp_template_and_log.call_count == 1
-    template_call = main._send_whatsapp_template_and_log.call_args
-    assert (
-        template_call.kwargs.get("template_sid")
-        == main.GDPR_CONSENT_WHATSAPP_TEMPLATE_SID
-    )
+    assert main._send_gdpr_consent_prompt.call_count == 1
+    gdpr_call = main._send_gdpr_consent_prompt.call_args
+    assert gdpr_call.kwargs.get("paziente_id") == PAZIENTE_ID
+    assert gdpr_call.kwargs.get("medico_id") == MEDICO_ID
 
     assert main._log_conversation_turn.call_count >= 1
     assert _user_logged_with_role_user(main._log_conversation_turn.call_args_list)
