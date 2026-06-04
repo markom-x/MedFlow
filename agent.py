@@ -484,12 +484,24 @@ def retrieve_relevant_chunks(
     default, la consultazione del fascicolo lato medico ne passa una piu' bassa.
     """
     if not supabase or not paziente_id:
+        if not supabase:
+            print(
+                "[agent] retrieve: client Supabase non inizializzato su questo "
+                "servizio (SUPABASE_URL / SUPABASE service key mancanti?).",
+                flush=True,
+            )
         return []
     cleaned_query = (query or "").strip()
     if len(cleaned_query) < min_query_chars:
         return []
     query_emb = _embed_text(cleaned_query)
     if not query_emb:
+        print(
+            "[agent] retrieve: embedding della query fallito -> 0 risultati. "
+            "Verifica OPENAI_API_KEY su QUESTO servizio (e' il web service "
+            "'medflow-api' che risponde alle query, non il worker).",
+            flush=True,
+        )
         return []
     try:
         resp = supabase.rpc(
@@ -546,6 +558,11 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         top_k=FASCICOLO_TOP_K,
         min_similarity=FASCICOLO_MIN_SIMILARITY,
         min_query_chars=FASCICOLO_MIN_QUERY_CHARS,
+    )
+    print(
+        f"[agent] fascicolo query paziente={paziente_id} chars={len(cleaned)} "
+        f"-> {len(chunks)} chunk recuperati.",
+        flush=True,
     )
     if not chunks:
         return {
