@@ -166,29 +166,20 @@ def test_pdf_missing_pymupdf_returns_graceful_placeholder(
 
 # --------------------------- nodi copilot / synthesizer ---------------------------
 
-def test_intake_first_contact_sends_welcome(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Passive intake: never asks clinical questions. First contact -> welcome,
-    always routes to the synthesizer (current_phase SYNTHESIZING)."""
+def test_intake_is_silent_and_routes_to_synthesizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passive intake: the AI never messages the patient. It only routes to the
+    synthesizer (current_phase SYNTHESIZING) without any reply."""
     state = {
         "messages": [HumanMessage(content="Hi")],
         "current_phase": "IDLE",
     }
     out = agent.node_patient_intake(state)
 
-    assert out["reply_to_send"] == agent.INTAKE_WELCOME_MESSAGE
     assert out["current_phase"] == "SYNTHESIZING"
-    assert any(isinstance(m, AIMessage) for m in out["messages"])
-
-
-def test_intake_returning_patient_sends_ack(monkeypatch: pytest.MonkeyPatch) -> None:
-    state = {
-        "messages": [HumanMessage(content="Here is my blood test")],
-        "current_phase": "FINISHED",
-    }
-    out = agent.node_patient_intake(state)
-
-    assert out["reply_to_send"] == agent.INTAKE_ACK_MESSAGE
-    assert out["current_phase"] == "SYNTHESIZING"
+    assert out.get("reply_to_send") is None
+    assert "messages" not in out or not out.get("messages")
 
 
 def test_synthesizer_produces_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -274,6 +265,10 @@ def patch_run_helpers(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(agent, "insert_richiesta", MagicMock())
     monkeypatch.setattr(agent, "_log_conversation_turn", MagicMock())
+    # Keep run_for_job hermetic: the graph's retrieval + inline indexing must
+    # not hit OpenAI/Supabase. Tests that assert on these override the mock.
+    monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
+    monkeypatch.setattr(agent, "index_document", MagicMock(return_value=1))
 
 
 def _payload(**overrides) -> dict:
@@ -303,11 +298,11 @@ def test_run_for_job_returns_error_when_paziente_missing(
     assert out["reason"] == "paziente_not_found"
 
 
-def test_run_for_job_passive_intake_acks_and_synthesizes(
+def test_run_for_job_passive_intake_is_silent_and_synthesizes(
     patch_run_helpers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Passive intake: every patient message gets a non-clinical acknowledgment
-    and refreshes the clinical summary (richiesta inserted for the doctor)."""
+    """Passive intake: the AI sends NOTHING to the patient, but still refreshes
+    the clinical summary (richiesta inserted for the doctor)."""
     monkeypatch.setattr(
         agent,
         "_synthesize_clinical",
@@ -323,21 +318,19 @@ def test_run_for_job_passive_intake_acks_and_synthesizes(
         ),
     )
     monkeypatch.setattr(agent, "retrieve_relevant_chunks", MagicMock(return_value=[]))
-    monkeypatch.setattr(agent, "index_document", MagicMock(return_value=0))
+    monkeypatch.setattr(agent, "index_document", MagicMock(return_value=1))
 
     out = agent.run_for_job(_payload())
 
     assert out["status"] == "ok"
     assert out["phase"] == "FINISHED"
-    assert out["sent_reply"] is True
+    assert out["sent_reply"] is False
     assert out["synthesis_inserted"] is True
-    channels.deliver_to_patient.assert_called_once()
-    # The reply to the patient is a plain acknowledgment, never a clinical question.
-    sent_text = channels.deliver_to_patient.call_args.kwargs.get(
-        "text"
-    ) or channels.deliver_to_patient.call_args.args[1]
-    assert sent_text in (agent.INTAKE_WELCOME_MESSAGE, agent.INTAKE_ACK_MESSAGE)
+    # The AI must never talk to the patient.
+    channels.deliver_to_patient.assert_not_called()
     agent.insert_richiesta.assert_called_once()
+    # The incoming patient text is indexed inline (works without the DB trigger).
+    agent.index_document.assert_called()
     saved_state = agent.save_session.call_args.args[1]
     assert saved_state == "FINISHED"
 

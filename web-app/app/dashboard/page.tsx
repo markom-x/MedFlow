@@ -41,42 +41,50 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-slate-50">
-      <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 md:px-6">
-        <div className="min-w-0">
-          <h1 className="truncate text-base font-semibold text-slate-900 md:text-lg">
-            Doctor CRM · MedFlow
-          </h1>
-          <p className="truncate text-xs text-slate-500">
-            Patients, WhatsApp messages and triage
-          </p>
+      {/* Hover-reveal top bar: a slim handle is always visible; the full header
+          drops down as an overlay only on hover/focus, so the patient list and
+          the record get the full viewport height. */}
+      <div className="group/topbar absolute inset-x-0 top-0 z-40">
+        <div className="flex h-2 w-full items-center justify-center bg-gradient-to-b from-slate-200/90 to-transparent transition group-hover/topbar:from-slate-300">
+          <span className="h-1 w-10 rounded-full bg-slate-400/70" aria-hidden />
         </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <Link
-            href="/"
-            className="text-sm text-slate-600 transition hover:text-slate-900"
-          >
-            Home
-          </Link>
-          <button
-            type="button"
-            onClick={() => setIsInviteModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 shadow-sm transition hover:bg-emerald-100"
-          >
-            <QrCode className="size-4" aria-hidden />
-            <span>Invite patients</span>
-            <Link2 className="size-3.5 opacity-80" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleLogout()}
-            disabled={signingOut}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
-          >
-            <LogOut className="size-4" aria-hidden />
-            {signingOut ? "Signing out…" : "Logout"}
-          </button>
-        </div>
-      </header>
+        <header className="pointer-events-none flex -translate-y-3 items-center justify-between gap-4 border-b border-slate-200 bg-white/95 px-4 py-3 opacity-0 shadow-md backdrop-blur transition-all duration-200 group-focus-within/topbar:pointer-events-auto group-focus-within/topbar:translate-y-0 group-focus-within/topbar:opacity-100 group-hover/topbar:pointer-events-auto group-hover/topbar:translate-y-0 group-hover/topbar:opacity-100 md:px-6">
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-semibold text-slate-900 md:text-lg">
+              Doctor CRM · MedFlow
+            </h1>
+            <p className="truncate text-xs text-slate-500">
+              Patients, WhatsApp messages and records
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <Link
+              href="/"
+              className="text-sm text-slate-600 transition hover:text-slate-900"
+            >
+              Home
+            </Link>
+            <button
+              type="button"
+              onClick={() => setIsInviteModalOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 shadow-sm transition hover:bg-emerald-100"
+            >
+              <QrCode className="size-4" aria-hidden />
+              <span>Invite patients</span>
+              <Link2 className="size-3.5 opacity-80" aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              disabled={signingOut}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              <LogOut className="size-4" aria-hidden />
+              {signingOut ? "Signing out…" : "Logout"}
+            </button>
+          </div>
+        </header>
+      </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DashboardApp />
       </div>

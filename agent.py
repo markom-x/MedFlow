@@ -76,21 +76,11 @@ from main import (
 # webhook already bridges into the dashboard chat.
 AGENT_SUMMARY_MARKER = "👨‍⚕️ You: 📋 Clinical summary updated"
 
-# Passive intake assistant (product design): the AI never interviews the
-# patient. The doctor is the one who asks questions (via "Ask the record"). The
-# patient just shares information and documents; the assistant acknowledges,
-# ingests/indexes everything, and keeps the clinical summary fresh.
-INTAKE_WELCOME_MESSAGE = (
-    "Hi! I'm your doctor's assistant. You can share anything that helps describe "
-    "your situation — your symptoms and how long they've lasted, photos or PDFs "
-    "of reports, lab results, or voice notes. I'll organise everything into your "
-    "medical record so your doctor can review it. I don't provide medical advice."
-)
-INTAKE_ACK_MESSAGE = (
-    "Thank you — I've added this to your medical record for your doctor. Feel "
-    "free to keep sharing details, report photos or PDFs, or voice notes. Your "
-    "doctor will review everything and follow up."
-)
+# Passive intake assistant (product design): the AI NEVER interviews nor
+# messages the patient. The doctor is the only one who talks to the patient
+# (manually) and asks questions (via "Ask the record"). The patient just shares
+# information and documents; the agent silently ingests/indexes everything and
+# keeps the clinical summary fresh.
 
 CHAT_MODEL = os.getenv("MEDFLOW_CHAT_MODEL", "gpt-4o")
 VISION_MODEL = os.getenv("MEDFLOW_VISION_MODEL", "gpt-4o")
@@ -1268,11 +1258,33 @@ def node_embed_and_index(state: AgentState) -> dict:
     retrievable nei turni futuri e nel fascicolo lato medico. Si attiva solo se
     un nodo a monte ha settato `needs_indexing=True`. Mai bloccante.
     """
-    if not state.get("needs_indexing"):
-        return {}
     pid = state.get("paziente_id") or ""
     mid = state.get("medico_id") or ""
     msid = state.get("message_sid") or ""
+
+    # Indicizzazione INLINE del testo del paziente: rende il messaggio
+    # interrogabile dal fascicolo anche se il trigger DB di auto-index
+    # (add_auto_index_triggers.sql) non e' stato applicato. Idempotente per
+    # message_sid (source_id dedicato "-msg" per non collidere con gli allegati).
+    body = (state.get("incoming_body") or "").strip()
+    if pid and mid and len(body) >= 4:
+        try:
+            index_document(
+                paziente_id=pid,
+                medico_id=mid,
+                source_type="conversazione",
+                source_id=(f"{msid}-msg" if msid else None),
+                text=f"[paziente] {body}",
+                metadata={"origine": "chat_inline", "message_sid": msid},
+            )
+        except Exception as e:
+            print(
+                f"[agent] index inline testo paziente fallito: {type(e).__name__}: {e}",
+                flush=True,
+            )
+
+    if not state.get("needs_indexing"):
+        return {}
 
     # Indicizza i doc di questo turno; fallback all'ultimo doc per retro-compat.
     pending = state.get("pending_index_docs")
@@ -1317,19 +1329,13 @@ def node_embed_and_index(state: AgentState) -> dict:
 
 def node_patient_intake(state: AgentState) -> dict:
     """
-    Passive intake: the assistant NEVER asks clinical questions. It just
-    acknowledges what the patient shared (warm, non-robotic) and routes to the
-    synthesizer, which refreshes the clinical summary so the doctor can query
-    the record. The doctor is the one who asks questions.
+    Passive intake: the assistant is SILENT toward the patient. It never asks
+    questions and never sends acknowledgments — the doctor is the only one who
+    talks to the patient (manually, from the dashboard). The patient just
+    uploads information/documents; here we only route to the synthesizer, which
+    refreshes the clinical summary the doctor can query.
     """
-    phase = state.get("current_phase") or "IDLE"
-    first_contact = phase in ("IDLE", "", None)
-    ack = INTAKE_WELCOME_MESSAGE if first_contact else INTAKE_ACK_MESSAGE
-    return {
-        "messages": [AIMessage(content=ack)],
-        "reply_to_send": ack,
-        "current_phase": "SYNTHESIZING",
-    }
+    return {"current_phase": "SYNTHESIZING"}
 
 
 def node_clinical_synthesizer(state: AgentState) -> dict:
