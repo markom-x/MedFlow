@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import traceback
 from datetime import datetime, timezone
 from typing import Annotated, Literal, TypedDict
@@ -651,6 +652,98 @@ def _messages_to_openai_chat(messages: list[BaseMessage]) -> list[dict]:
     return out
 
 
+def _fascicolo_direct_answer(query: str, chunks: list[dict]) -> str | None:
+    """
+    Risposta immediata dai chunk RAG senza LLM: se il testo contiene gia' la
+    risposta (es. messaggio paziente "my body temperature is 40"), la restituiamo
+    in una frase. Evita dipendenza da OpenAI sul web service Render.
+    """
+    if not chunks:
+        return None
+    q = (query or "").strip().lower()
+    qwords = {w for w in re.split(r"\W+", q) if len(w) >= 3}
+
+    # --- body temperature / fever ---
+    if qwords & {"temperature", "temp", "fever", "febbr", "febvere"} or (
+        "body" in q and "temperature" in q
+    ):
+        readings: list[tuple[str, str]] = []
+        seen_vals: set[str] = set()
+        for c in chunks[:8]:
+            content = (c.get("content") or "")
+            for line in content.splitlines():
+                line_s = line.strip()
+                if not line_s:
+                    continue
+                ll = line_s.lower()
+                is_patient_line = (
+                    ("[paziente]" in ll or "[user]" in ll or ll.startswith("messaggio:"))
+                    and "clinical summary" not in ll
+                    and "sintesi clinica" not in ll
+                )
+                is_summary = "sintesi clinica" in ll or "clinical summary" in ll
+
+                for pat in (
+                    r"my body temperature is\s+(\d{2}(?:\.\d)?)",
+                    r"body temperature(?:\s+is)?\s+(?:of\s+)?(\d{2}(?:\.\d)?)\s*°?\s*c",
+                    r"(?:bt|temp(?:erature)?)\s*[:=]?\s*(\d{2}(?:\.\d)?)\s*°?\s*c",
+                    r"(\d{2}(?:\.\d)?)\s*°c",
+                ):
+                    for m in re.finditer(pat, line_s, re.I):
+                        raw = m.group(1)
+                        try:
+                            v = float(raw)
+                        except ValueError:
+                            continue
+                        if v < 34 or v > 45:
+                            continue
+                        label = (
+                            "patient message"
+                            if is_patient_line
+                            else ("clinical summary" if is_summary else "record")
+                        )
+                        disp = f"{raw}°C"
+                        if disp not in seen_vals:
+                            seen_vals.add(disp)
+                            readings.append((disp, label))
+
+        if readings:
+            parts = [f"{val} ({src})" for val, src in readings[:4]]
+            return (
+                "Body temperature documented in the record: "
+                + "; ".join(parts)
+                + "."
+            )
+
+    # --- generic: best matching patient line ---
+    best_line = ""
+    best_score = 0
+    for c in chunks[:6]:
+        for line in (c.get("content") or "").splitlines():
+            line_s = line.strip()
+            if len(line_s) < 6:
+                continue
+            ll = line_s.lower()
+            if "clinical summary updated" in ll or "sintesi clinica:" in ll[:30]:
+                continue
+            score = sum(1 for w in qwords if w in ll)
+            if "[paziente]" in ll or "[user]" in ll:
+                score += 3
+            if ll.startswith("messaggio:") and "you:" not in ll[:20]:
+                score += 2
+            if score > best_score:
+                best_score = score
+                best_line = line_s
+
+    if best_score >= 2 and best_line:
+        clean = re.sub(r"^\[(?:paziente|user)\]\s*", "", best_line, flags=re.I)
+        clean = re.sub(r"^Messaggio:\s*", "", clean, flags=re.I).strip()
+        if clean and len(clean) < 500:
+            return f"From the patient's record: {clean}"
+
+    return None
+
+
 def _fascicolo_excerpt_fallback(
     chunks: list[dict], query: str, *, llm_failed: bool = False
 ) -> str:
@@ -847,6 +940,22 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             "sources": [],
         }
 
+    sources = [
+        {
+            "source_type": c.get("source_type"),
+            "source_id": c.get("source_id"),
+            "similarity": round(float(c.get("similarity") or 0.0), 3),
+            "created_at": c.get("created_at"),
+            "content": c.get("content"),
+        }
+        for c in chunks
+    ]
+
+    direct = _fascicolo_direct_answer(cleaned, chunks)
+    if direct:
+        print("[agent] fascicolo: direct answer (no LLM).", flush=True)
+        return {"answer": direct, "sources": sources}
+
     context_parts = []
     for i, c in enumerate(chunks, start=1):
         st = c.get("source_type") or "?"
@@ -871,17 +980,10 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             "(web service Render, non il worker). Uso estratti senza LLM.",
             flush=True,
         )
+        direct = _fascicolo_direct_answer(cleaned, chunks)
+        if direct:
+            return {"answer": direct, "sources": sources}
         answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=False)
-        sources = [
-            {
-                "source_type": c.get("source_type"),
-                "source_id": c.get("source_id"),
-                "similarity": round(float(c.get("similarity") or 0.0), 3),
-                "created_at": c.get("created_at"),
-                "content": c.get("content"),
-            }
-            for c in chunks
-        ]
         return {"answer": answer, "sources": sources}
 
     answer = ""
@@ -900,18 +1002,12 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             print("[agent] fascicolo: risposta da minimal LLM.", flush=True)
 
     if not answer:
-        answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=True)
+        direct = _fascicolo_direct_answer(cleaned, chunks)
+        if direct:
+            answer = direct
+        else:
+            answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=True)
 
-    sources = [
-        {
-            "source_type": c.get("source_type"),
-            "source_id": c.get("source_id"),
-            "similarity": round(float(c.get("similarity") or 0.0), 3),
-            "created_at": c.get("created_at"),
-            "content": c.get("content"),
-        }
-        for c in chunks
-    ]
     return {"answer": answer, "sources": sources}
 
 

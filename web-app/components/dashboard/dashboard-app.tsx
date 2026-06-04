@@ -261,6 +261,7 @@ export function DashboardApp() {
             buckets={buckets}
             selectedId={selectedId}
             onSelect={handleSelectPatient}
+            updatePatientName={updatePatientName}
           />
         </div>
       </div>
@@ -272,7 +273,6 @@ export function DashboardApp() {
           sending={sending}
           onSendMessage={handleSendMessage}
           onNotesSaved={() => void load({ silent: true })}
-          updatePatientName={updatePatientName}
         />
       ) : (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center overflow-hidden border-t border-slate-200 bg-white md:border-l md:border-t-0">
