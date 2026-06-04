@@ -53,11 +53,9 @@ export default function Home() {
               </span>
             </h1>
             <p className="mt-6 max-w-2xl text-base leading-relaxed text-slate-600 md:text-xl md:leading-relaxed">
-              Patients simply send their symptoms, reports and lab results on WhatsApp —
-              the app they already use every day. No new app, no sign-up, nothing to learn,
-              so even older or less tech-savvy patients can reach their doctor without
-              friction. The AI organises everything into a clinical record the doctor can
-              question in plain English.
+              Patients just text their doctor on WhatsApp. No app, no sign-up, nothing
+              to learn. The AI turns every message, voice note and report into a living
+              clinical record — one the doctor can simply ask.
             </p>
             <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center">
               <Link
