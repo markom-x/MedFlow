@@ -7,23 +7,19 @@ import { getSupabaseServiceRoleClient } from "@/lib/supabase/server";
 
 export type SignInResult = { ok: false; error: string } | void;
 
-/**
- * Ensures the demo doctor exists in Supabase Auth with the password from env.
- * Requires SUPABASE_SERVICE_ROLE_KEY on the server (Vercel). Idempotent: safe
- * on every allowed sign-in attempt.
- */
-async function ensureDemoDoctorAuthUser(
-  demoEmail: string,
+const DEFAULT_DEMO_EMAIL = "founder@medflow.demo";
+
+async function ensureDemoAuthUser(
+  email: string,
   password: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const admin = getSupabaseServiceRoleClient();
-    const { data: created, error: createError } =
-      await admin.auth.admin.createUser({
-        email: demoEmail,
-        password,
-        email_confirm: true,
-      });
+    const { error: createError } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+    });
 
     if (!createError) {
       return { ok: true };
@@ -46,14 +42,10 @@ async function ensureDemoDoctorAuthUser(
     }
 
     const existing = (listData?.users ?? []).find(
-      (u) => (u.email || "").trim().toLowerCase() === demoEmail
+      (u) => (u.email || "").trim().toLowerCase() === email
     );
     if (!existing?.id) {
-      return {
-        ok: false,
-        error:
-          "Demo user exists but could not be found. Check DEMO_DOCTOR_EMAIL in Supabase Auth.",
-      };
+      return { ok: false, error: "Demo user not found in Supabase Auth." };
     }
 
     const { error: updateError } = await admin.auth.admin.updateUserById(
@@ -65,73 +57,76 @@ async function ensureDemoDoctorAuthUser(
     }
     return { ok: true };
   } catch (e) {
-    const message = e instanceof Error ? e.message : "Service role unavailable.";
+    const message = e instanceof Error ? e.message : "Server config error.";
     return { ok: false, error: message };
   }
 }
 
 /**
- * Gated demo sign-in.
- *
- * The login form looks like a normal email field, but only allow-listed
- * addresses can enter. The founder types their invited email; the server opens
- * the shared demo doctor session (DEMO_DOCTOR_EMAIL) without OTP.
- *
- * Env (Vercel):
- * - DEMO_DOCTOR_EMAIL / DEMO_DOCTOR_PASSWORD — Supabase Auth user for the demo.
- * - DEMO_ALLOWED_EMAILS — comma-separated invite emails (optional).
- * - SUPABASE_SERVICE_ROLE_KEY — syncs the Auth user password from env on each
- *   sign-in (recommended; fixes "Invalid login credentials" after env changes).
+ * Demo login: one email + one password (what the user types in the form).
+ * Defaults: founder@medflow.demo — override with DEMO_DOCTOR_EMAIL /
+ * DEMO_DOCTOR_PASSWORD on Vercel. Requires SUPABASE_SERVICE_ROLE_KEY to
+ * auto-create/sync the Auth user.
  */
-export async function signInWithEmail(emailInput: string): Promise<SignInResult> {
+export async function signInWithDemo(
+  emailInput: string,
+  passwordInput: string
+): Promise<SignInResult> {
   const email = (emailInput || "").trim().toLowerCase();
-  if (!email) {
-    return { ok: false, error: "Enter the email you were given for the demo." };
+  const password = (passwordInput || "").trim();
+
+  if (!email || !password) {
+    return { ok: false, error: "Enter email and password." };
   }
 
-  const demoEmail = (process.env.DEMO_DOCTOR_EMAIL || "").trim().toLowerCase();
-  const password = (process.env.DEMO_DOCTOR_PASSWORD || "").trim();
-  if (!demoEmail || !password) {
+  const demoEmail = (
+    process.env.DEMO_DOCTOR_EMAIL || DEFAULT_DEMO_EMAIL
+  )
+    .trim()
+    .toLowerCase();
+
+  if (email !== demoEmail) {
     return {
       ok: false,
-      error:
-        "Demo not configured: set DEMO_DOCTOR_EMAIL and DEMO_DOCTOR_PASSWORD on Vercel.",
+      error: "Invalid demo credentials.",
     };
   }
 
-  const allowList = (process.env.DEMO_ALLOWED_EMAILS || demoEmail)
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-
-  if (!allowList.includes(email)) {
+  const expectedPassword = (process.env.DEMO_DOCTOR_PASSWORD || "").trim();
+  if (!expectedPassword) {
     return {
       ok: false,
-      error:
-        "This email isn't authorized for the demo. Use the address you were given.",
+      error: "Demo password not configured (DEMO_DOCTOR_PASSWORD on Vercel).",
     };
   }
 
-  if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    const ensured = await ensureDemoDoctorAuthUser(demoEmail, password);
-    if (!ensured.ok) {
-      return {
-        ok: false,
-        error: `Could not prepare demo account: ${ensured.error}`,
-      };
-    }
+  if (password !== expectedPassword) {
+    return { ok: false, error: "Invalid demo credentials." };
+  }
+
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return {
+      ok: false,
+      error:
+        "Add SUPABASE_SERVICE_ROLE_KEY on Vercel (Settings → Environment Variables).",
+    };
+  }
+
+  const ensured = await ensureDemoAuthUser(demoEmail, expectedPassword);
+  if (!ensured.ok) {
+    return {
+      ok: false,
+      error: `Could not prepare demo account: ${ensured.error}`,
+    };
   }
 
   const supabase = await getSupabaseAuthServerClient();
   const { error } = await supabase.auth.signInWithPassword({
     email: demoEmail,
-    password,
+    password: expectedPassword,
   });
   if (error) {
-    const hint = process.env.SUPABASE_SERVICE_ROLE_KEY
-      ? " Check that DEMO_DOCTOR_EMAIL matches the Supabase Auth user."
-      : " Add SUPABASE_SERVICE_ROLE_KEY on Vercel, or create the user in Supabase → Authentication → Users with that exact email and password.";
-    return { ok: false, error: `Sign-in failed: ${error.message}.${hint}` };
+    return { ok: false, error: `Sign-in failed: ${error.message}` };
   }
 
   redirect("/dashboard");

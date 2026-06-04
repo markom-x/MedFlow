@@ -13,7 +13,7 @@ import {
   sortPatientIds,
   type PatientBucket,
 } from "@/lib/dashboard/aggregate";
-import { fetchRichieste } from "@/lib/dashboard/data";
+import { loadDashboardRichieste } from "@/lib/actions/dashboard-data";
 import { patientDisplayName } from "@/lib/dashboard/format";
 import { getSupabaseAuthBrowserClient } from "@/lib/supabase/auth-browser";
 import { safeStorageFileName } from "@/lib/upload/safe-storage-name";
@@ -35,9 +35,11 @@ export function DashboardApp() {
       setLoading(true);
     }
     try {
-      const supabase = getSupabaseAuthBrowserClient();
-      const rows = await fetchRichieste(supabase);
-      const map = groupRichiesteByPatient(rows);
+      const result = await loadDashboardRichieste();
+      if (!result.ok) {
+        throw new Error(result.message);
+      }
+      const map = groupRichiesteByPatient(result.rows);
       const ids = sortPatientIds(map);
       setBuckets(map);
       setOrderedIds(ids);
@@ -188,8 +190,8 @@ export function DashboardApp() {
       <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-50 px-4 md:px-6">
         <div className="max-w-md rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
           <p className="text-base leading-relaxed text-slate-700">
-            No records on file yet. Connect Supabase and import data to see your
-            patients.
+            No patients yet for this practice. Send a WhatsApp message to your
+            MedFlow number or run the demo seed in Supabase.
           </p>
         </div>
       </div>
