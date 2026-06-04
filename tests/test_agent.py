@@ -568,7 +568,9 @@ def test_retrieve_calls_match_rpc_and_returns_data(
     assert rpc_args.args[0] == "match_anamnesi_documenti"
     rpc_payload = rpc_args.args[1]
     assert rpc_payload["match_paziente_id"] == PAZIENTE_ID
-    assert isinstance(rpc_payload["query_embedding"], list)
+    # pgvector RPC: string "[0.1,...]" (preferred) or list[float]
+    emb = rpc_payload["query_embedding"]
+    assert isinstance(emb, (list, str))
 
 
 def test_retrieve_returns_empty_on_rpc_error(

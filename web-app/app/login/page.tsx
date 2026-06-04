@@ -1,33 +1,16 @@
 "use client";
 
-import { Loader2, Mail, PlayCircle, ShieldCheck, Stethoscope } from "lucide-react";
+import { Loader2, Mail, Stethoscope } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useState } from "react";
 import { toast } from "sonner";
 
-import { enterDemo } from "@/lib/actions/demo";
-import { getSupabaseAuthBrowserClient } from "@/lib/supabase/auth-browser";
+import { signInWithEmail } from "@/lib/actions/demo";
 
 function LoginForm() {
   const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
-  const [demoPending, setDemoPending] = useState(false);
-
-  async function onEnterDemo() {
-    setDemoPending(true);
-    try {
-      const res = await enterDemo();
-      // On success the server redirects to /dashboard automatically.
-      if (res && res.ok === false) {
-        toast.error(res.error);
-      }
-    } catch {
-      toast.error("Demo sign-in failed. Please try again.");
-    } finally {
-      setDemoPending(false);
-    }
-  }
 
   const hasInvalidLinkError =
     params.get("error") === "link_non_valido_o_scaduto";
@@ -42,25 +25,13 @@ function LoginForm() {
 
     try {
       setSending(true);
-      const supabase = getSupabaseAuthBrowserClient();
-      const { error } = await supabase.auth.signInWithOtp({
-        email: normalizedEmail,
-        options: {
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
-        },
-      });
-
-      if (error) {
-        toast.error(`Could not send link: ${error.message}`);
-        return;
+      const res = await signInWithEmail(normalizedEmail);
+      // On success the server redirects to /dashboard automatically.
+      if (res && res.ok === false) {
+        toast.error(res.error);
       }
-
-      toast.success("Link sent! Check your email.");
-      setEmail("");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unexpected error.";
-      toast.error(message);
+    } catch {
+      toast.error("Sign-in failed. Please try again.");
     } finally {
       setSending(false);
     }
@@ -94,8 +65,8 @@ function LoginForm() {
               Sign in to MedFlow
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Try the live demo in one click, or sign in with a secure Supabase
-              magic link.
+              Enter the email address you were given for the demo. Access is
+              limited to invited reviewers.
             </p>
           </div>
         </div>
@@ -106,39 +77,9 @@ function LoginForm() {
           </div>
         ) : null}
 
-        <button
-          type="button"
-          onClick={() => void onEnterDemo()}
-          disabled={demoPending}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-blue-600 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 ring-1 ring-white/20 transition hover:scale-[1.02] hover:shadow-xl hover:shadow-blue-600/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
-        >
-          {demoPending ? (
-            <>
-              <Loader2 className="size-4 animate-spin" />
-              Signing in...
-            </>
-          ) : (
-            <>
-              <PlayCircle className="size-5" />
-              Enter the demo
-            </>
-          )}
-        </button>
-        <p className="mt-2 text-center text-xs leading-relaxed text-slate-500">
-          Opens the doctor dashboard instantly — no email required.
-        </p>
-
-        <div className="my-6 flex items-center gap-3">
-          <span className="h-px flex-1 bg-slate-200/80" />
-          <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
-            or sign in with email
-          </span>
-          <span className="h-px flex-1 bg-slate-200/80" />
-        </div>
-
         <form className="space-y-4" onSubmit={onSubmit}>
           <label className="block text-sm font-semibold text-slate-700" htmlFor="email">
-            Work email
+            Email
           </label>
           <div className="relative">
             <Mail className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
@@ -147,7 +88,7 @@ function LoginForm() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="doctor@practice.com"
+              placeholder="you@practice.com"
               className="w-full rounded-xl border-0 bg-slate-100/90 py-3 pl-10 pr-3 text-sm text-slate-900 shadow-inner shadow-slate-900/[0.03] ring-1 ring-slate-200/60 transition-all placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
               autoComplete="email"
               required
@@ -157,24 +98,23 @@ function LoginForm() {
           <button
             type="submit"
             disabled={sending}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-blue-600 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 ring-1 ring-white/20 transition hover:scale-[1.02] hover:shadow-xl hover:shadow-blue-600/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
           >
             {sending ? (
               <>
                 <Loader2 className="size-4 animate-spin" />
-                Sending...
+                Signing in...
               </>
             ) : (
               <>
-                <ShieldCheck className="size-4" />
-                Send sign-in link
+                Continue
               </>
             )}
           </button>
         </form>
 
         <p className="mt-5 text-xs leading-relaxed text-slate-500">
-          You&apos;ll get a one-time link by email. No password to remember.
+          Invited reviewers go straight in — no inbox, no code to copy.
         </p>
       </section>
     </main>

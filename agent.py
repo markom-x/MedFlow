@@ -399,6 +399,123 @@ def _embed_text(text: str) -> list[float] | None:
     return out[0] if out else None
 
 
+def _embedding_rpc_param(embedding: list[float]) -> str:
+    """Formato pgvector per RPC PostgREST (alcune versioni rifiutano list[float])."""
+    return "[" + ",".join(f"{x:.8f}" for x in embedding) + "]"
+
+
+def _count_anamnesi_chunks(paziente_id: str) -> int:
+    if not supabase or not paziente_id:
+        return 0
+    try:
+        resp = (
+            supabase.table("anamnesi_documenti")
+            .select("id", count="exact")
+            .eq("paziente_id", paziente_id)
+            .execute()
+        )
+        return int(resp.count or 0)
+    except Exception as e:
+        print(
+            f"[agent] ERRORE _count_anamnesi_chunks: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        return 0
+
+
+def _rpc_match_chunks(
+    query_emb: list[float],
+    paziente_id: str,
+    top_k: int,
+    min_similarity: float,
+) -> list[dict]:
+    """Chiama match_anamnesi_documenti; prova formato string pgvector se list fallisce."""
+    if not supabase:
+        return []
+    payloads = [
+        {"query_embedding": _embedding_rpc_param(query_emb), "match_paziente_id": paziente_id},
+        {"query_embedding": query_emb, "match_paziente_id": paziente_id},
+    ]
+    last_err: Exception | None = None
+    for base in payloads:
+        try:
+            resp = supabase.rpc(
+                "match_anamnesi_documenti",
+                {
+                    **base,
+                    "match_count": top_k,
+                    "min_similarity": min_similarity,
+                },
+            ).execute()
+            return list(resp.data or [])
+        except Exception as e:
+            last_err = e
+    if last_err:
+        print(
+            f"[agent] ERRORE _rpc_match_chunks: {type(last_err).__name__}: {last_err}",
+            flush=True,
+        )
+        traceback.print_exc()
+    return []
+
+
+def _keyword_fallback_chunks(
+    paziente_id: str,
+    query: str,
+    top_k: int = FASCICOLO_TOP_K,
+) -> list[dict]:
+    """
+    Fallback se la similarity search non restituisce nulla: cerca parole della
+    domanda nel testo dei chunk gia' indicizzati (utile per termini corti o
+    quando la RPC vector e' problematica).
+    """
+    if not supabase or not paziente_id:
+        return []
+    cleaned = (query or "").strip().lower()
+    if not cleaned:
+        return []
+    words = [w for w in cleaned.replace("?", "").split() if len(w) >= 3]
+    if not words:
+        words = [cleaned[:40]]
+    try:
+        resp = (
+            supabase.table("anamnesi_documenti")
+            .select("id, source_type, source_id, chunk_index, content, created_at, metadata")
+            .eq("paziente_id", paziente_id)
+            .order("created_at", desc=True)
+            .limit(80)
+            .execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        print(
+            f"[agent] ERRORE _keyword_fallback_chunks: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        return []
+
+    scored: list[tuple[float, dict]] = []
+    for row in rows:
+        content = (row.get("content") or "").lower()
+        if not content:
+            continue
+        hits = sum(1 for w in words if w in content)
+        if hits <= 0:
+            continue
+        sim = hits / len(words)
+        scored.append(
+            (
+                sim,
+                {
+                    **row,
+                    "similarity": sim,
+                },
+            )
+        )
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item[1] for item in scored[:top_k]]
+
+
 def index_document(
     paziente_id: str,
     medico_id: str,
@@ -493,24 +610,16 @@ def retrieve_relevant_chunks(
             flush=True,
         )
         return []
-    try:
-        resp = supabase.rpc(
-            "match_anamnesi_documenti",
-            {
-                "query_embedding": query_emb,
-                "match_paziente_id": paziente_id,
-                "match_count": top_k,
-                "min_similarity": min_similarity,
-            },
-        ).execute()
-        return list(resp.data or [])
-    except Exception as e:
-        print(
-            f"[agent] ERRORE retrieve_relevant_chunks: {type(e).__name__}: {e}",
-            flush=True,
-        )
-        traceback.print_exc()
-        return []
+
+    chunks = _rpc_match_chunks(query_emb, paziente_id, top_k, min_similarity)
+    if not chunks and min_similarity > 0:
+        chunks = _rpc_match_chunks(query_emb, paziente_id, top_k, 0.0)
+        if chunks:
+            print(
+                f"[agent] retrieve: retry min_similarity=0 -> {len(chunks)} chunk.",
+                flush=True,
+            )
+    return chunks
 
 
 def _generate_fascicolo_answer(messages: list[BaseMessage]) -> str:
@@ -542,6 +651,21 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             "sources": [],
         }
 
+    indexed_total = _count_anamnesi_chunks(paziente_id)
+    if indexed_total == 0:
+        print(
+            f"[agent] fascicolo: 0 chunk in DB per paziente={paziente_id}, "
+            "avvio backfill sincrono.",
+            flush=True,
+        )
+        backfill_stats = backfill_fascicolo(paziente_id)
+        indexed_total = _count_anamnesi_chunks(paziente_id)
+        print(
+            f"[agent] fascicolo backfill done stats={backfill_stats} "
+            f"indexed_total={indexed_total}",
+            flush=True,
+        )
+
     chunks = retrieve_relevant_chunks(
         paziente_id,
         cleaned,
@@ -549,16 +673,33 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         min_similarity=FASCICOLO_MIN_SIMILARITY,
         min_query_chars=FASCICOLO_MIN_QUERY_CHARS,
     )
+    if not chunks and indexed_total > 0:
+        chunks = _keyword_fallback_chunks(paziente_id, cleaned, top_k=FASCICOLO_TOP_K)
+        if chunks:
+            print(
+                f"[agent] fascicolo: keyword fallback -> {len(chunks)} chunk.",
+                flush=True,
+            )
+
     print(
         f"[agent] fascicolo query paziente={paziente_id} chars={len(cleaned)} "
-        f"-> {len(chunks)} chunk recuperati.",
+        f"indexed_in_db={indexed_total} -> {len(chunks)} chunk recuperati.",
         flush=True,
     )
     if not chunks:
+        if indexed_total == 0:
+            return {
+                "answer": (
+                    "This patient's record has not been indexed yet (no searchable "
+                    "documents in the database). Send a WhatsApp message or run "
+                    "backfill_index.py, then try again."
+                ),
+                "sources": [],
+            }
         return {
             "answer": (
                 "I could not find anything in the patient's record that answers this "
-                "question. A relevant document may not have been indexed yet."
+                "question. Try rephrasing (e.g. include a symptom name or lab value)."
             ),
             "sources": [],
         }
