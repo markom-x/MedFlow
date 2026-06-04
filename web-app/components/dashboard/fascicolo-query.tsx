@@ -15,20 +15,20 @@ type Props = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  referto_ocr: "Referto",
-  richiesta_sintesi: "Sintesi visita",
-  conversazione: "Conversazione",
-  manuale: "Inserito a mano",
+  referto_ocr: "Report",
+  richiesta_sintesi: "Visit summary",
+  conversazione: "Conversation",
+  manuale: "Manual entry",
 };
 
 function formatSourceLabel(source: FascicoloSource): string {
   const base = source.source_type
     ? SOURCE_LABELS[source.source_type] ?? source.source_type
-    : "Fonte";
+    : "Source";
   if (source.created_at) {
     const d = new Date(source.created_at);
     if (!Number.isNaN(d.getTime())) {
-      return `${base} · ${d.toLocaleDateString("it-IT")}`;
+      return `${base} · ${d.toLocaleDateString("en-US")}`;
     }
   }
   return base;
@@ -49,7 +49,7 @@ export function FascicoloQuery({ pazienteId }: Props) {
   async function handleAsk() {
     const q = query.trim();
     if (!q) {
-      toast.error("Scrivi una domanda sul fascicolo.");
+      toast.error("Type a question about the patient record.");
       return;
     }
     setLoading(true);
@@ -79,13 +79,13 @@ export function FascicoloQuery({ pazienteId }: Props) {
           id="fascicolo-query-heading"
           className="text-lg font-semibold text-slate-900"
         >
-          Interroga il fascicolo
+          Ask the record
         </h3>
       </div>
       <p className="mt-2 text-sm text-slate-600">
-        Fai una domanda in linguaggio naturale sui documenti del paziente
-        (referti, sintesi delle visite). La risposta usa solo ciò che è nel
-        fascicolo e cita le fonti.
+        Ask a natural-language question about the patient&apos;s documents
+        (reports, visit summaries). The answer uses only what is in the record
+        and cites its sources.
       </p>
 
       <div className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -100,8 +100,8 @@ export function FascicoloQuery({ pazienteId }: Props) {
           }}
           disabled={loading}
           className="w-full flex-1 rounded-lg border border-slate-200 bg-white px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-600/25"
-          placeholder="Es. Qual è l'ultimo valore di emoglobina? Ha allergie note?"
-          aria-label="Domanda sul fascicolo del paziente"
+          placeholder="E.g. What is the latest hemoglobin value? Any known allergies?"
+          aria-label="Question about the patient record"
         />
         <Button
           type="button"
@@ -112,12 +112,12 @@ export function FascicoloQuery({ pazienteId }: Props) {
           {loading ? (
             <>
               <Loader2 className="mr-1.5 size-4 animate-spin" />
-              Cerco…
+              Searching…
             </>
           ) : (
             <>
               <Search className="mr-1.5 size-4" />
-              Chiedi
+              Ask
             </>
           )}
         </Button>

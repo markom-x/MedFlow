@@ -10,11 +10,11 @@ export function EmptyPatientState() {
           <UserRound className="size-7" strokeWidth={1.5} aria-hidden />
         </div>
         <h2 className="mt-6 text-xl font-semibold text-slate-900">
-          Seleziona un paziente
+          Select a patient
         </h2>
         <p className="mt-3 text-base leading-relaxed text-slate-600">
-          Scegli un contatto dalla lista a sinistra per vedere il riassunto clinico,
-          i referti e la conversazione.
+          Pick a contact from the list on the left to see the clinical summary,
+          reports and the conversation.
         </p>
       </div>
     </div>

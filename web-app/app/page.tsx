@@ -35,7 +35,7 @@ export default function Home() {
             href="/login"
             className="rounded-full bg-gradient-to-r from-violet-600 to-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition hover:scale-[1.03] hover:shadow-xl hover:shadow-blue-600/30 active:scale-[0.98] sm:px-5"
           >
-            Area Medici
+            Doctor area
           </Link>
         </div>
       </header>
@@ -44,30 +44,30 @@ export default function Home() {
         <section className="pb-12 pt-12 md:pb-20 md:pt-20">
           <div className="relative max-w-4xl">
             <p className="mb-4 inline-flex items-center rounded-full border border-slate-200/80 bg-white/60 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-slate-600 shadow-sm backdrop-blur-sm">
-              Triage clinico · WhatsApp · AI
+              Clinical triage · WhatsApp · AI
             </p>
             <h1 className="text-[2.5rem] font-bold leading-[1.05] tracking-tight text-slate-900 sm:text-5xl md:text-6xl lg:text-7xl">
-              Il triage AI{" "}
+              AI triage{" "}
               <span className="bg-gradient-to-r from-violet-600 via-blue-600 to-cyan-600 bg-clip-text text-transparent">
-                per il medico moderno.
+                for the modern doctor.
               </span>
             </h1>
             <p className="mt-6 max-w-2xl text-base leading-relaxed text-slate-600 md:text-xl md:leading-relaxed">
-              Trasforma i messaggi WhatsApp dei tuoi pazienti in schede cliniche strutturate.
-              Risparmia ore di lavoro ogni giorno, in totale sicurezza.
+              Turn your patients&apos; WhatsApp messages into structured clinical records.
+              Save hours of work every day, fully securely.
             </p>
             <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center">
               <Link
                 href="/login"
                 className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-violet-600 to-blue-600 px-8 py-3.5 text-sm font-semibold text-white shadow-xl shadow-blue-600/20 ring-1 ring-white/20 transition hover:scale-[1.02] hover:shadow-2xl hover:shadow-blue-600/25 active:scale-[0.98]"
               >
-                Inizia la Prova
+                Start the demo
               </Link>
               <Link
                 href="/#features"
                 className="inline-flex items-center justify-center rounded-full border border-slate-200/80 bg-white/70 px-8 py-3.5 text-sm font-semibold text-slate-800 shadow-md shadow-slate-900/[0.04] backdrop-blur-sm transition hover:border-slate-300/90 hover:bg-white hover:shadow-lg active:scale-[0.98]"
               >
-                Scopri come funziona
+                See how it works
               </Link>
             </div>
           </div>
@@ -78,10 +78,10 @@ export default function Home() {
         <section id="features" className="pb-16 md:pb-24">
           <div className="mb-10 max-w-2xl">
             <h2 className="text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
-              Tutto ciò che serve al tuo studio
+              Everything your practice needs
             </h2>
             <p className="mt-2 text-slate-600 md:text-lg">
-              Strumenti pensati per ridurre il carico amministrativo senza compromettere la cura.
+              Tools designed to cut the administrative load without compromising care.
             </p>
           </div>
           <div className="grid grid-cols-1 gap-5 md:grid-cols-3 md:gap-6">
@@ -89,10 +89,10 @@ export default function Home() {
               <div className="mb-5 inline-flex rounded-2xl border border-blue-100/80 bg-gradient-to-br from-blue-50 to-white p-3 text-blue-600 shadow-sm transition group-hover:scale-105">
                 <MessageCircle className="size-5" />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">Nessuna App da scaricare</h3>
+              <h3 className="text-lg font-semibold text-slate-900">No app to download</h3>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                I pazienti ti scrivono sul tuo assistente virtuale WhatsApp. Nessuna frizione,
-                massima accessibilita&apos;.
+                Patients message your WhatsApp virtual assistant. Zero friction,
+                maximum accessibility.
               </p>
             </article>
 
@@ -100,10 +100,10 @@ export default function Home() {
               <div className="mb-5 inline-flex rounded-2xl border border-violet-100/80 bg-gradient-to-br from-violet-50 to-white p-3 text-violet-600 shadow-sm transition group-hover:scale-105">
                 <BrainCircuit className="size-5" />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">Estrazione Dati AI</h3>
+              <h3 className="text-lg font-semibold text-slate-900">AI data extraction</h3>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                Il nostro motore clinico legge i messaggi e genera schede di triage con livelli di
-                urgenza e red flags.
+                Our clinical engine reads the messages and generates triage records with
+                key findings and red flags.
               </p>
             </article>
 
@@ -111,10 +111,10 @@ export default function Home() {
               <div className="mb-5 inline-flex rounded-2xl border border-emerald-100/80 bg-gradient-to-br from-emerald-50 to-white p-3 text-emerald-600 shadow-sm transition group-hover:scale-105">
                 <ShieldCheck className="size-5" />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">Privacy Garantita</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Privacy guaranteed</h3>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                Architettura Multi-tenant con Row Level Security. I tuoi dati e quelli dei tuoi
-                pazienti sono blindati.
+                Multi-tenant architecture with Row Level Security. Your data and your
+                patients&apos; data stay locked down.
               </p>
             </article>
           </div>
@@ -123,7 +123,7 @@ export default function Home() {
 
       <footer className="relative z-10 border-t border-slate-200/60 bg-white/50 backdrop-blur-md">
         <div className="mx-auto w-full max-w-7xl px-4 py-6 text-center text-xs text-slate-500 md:px-6">
-          © 2026 MedFlow. Progettato da Marco Carbone.
+          © 2026 MedFlow. Designed by Marco Carbone.
         </div>
       </footer>
     </main>

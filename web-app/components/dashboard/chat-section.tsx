@@ -54,9 +54,9 @@ const FILE_INPUT_ACCEPT =
   "image/jpeg,image/png,image/webp,image/gif,application/pdf,.pdf,.png,.jpg,.jpeg,.webp";
 
 const QUICK_REPLIES = [
-  "Ricetta pronta in segreteria",
-  "Passi in studio per una visita",
-  "Tutto nella norma",
+  "Prescription ready at the front desk",
+  "Please come in for a visit",
+  "Everything looks normal",
 ] as const;
 
 /** Paziente: sinistra, grigio chiaro */
@@ -256,7 +256,7 @@ export function ChatSection({
       >
         {chatRows.map((messaggio) => {
           const raw =
-            (messaggio.messaggio_originale ?? "").trim() || "[Messaggio vuoto]";
+            (messaggio.messaggio_originale ?? "").trim() || "[Empty message]";
           const medico = isMedicoMessage(messaggio.messaggio_originale);
           const text = bubbleMessageText(raw, medico);
           const u = messaggio.url_media?.trim() || null;
@@ -358,7 +358,7 @@ export function ChatSection({
                 if (fileInputRef.current) fileInputRef.current.value = "";
               }}
               className="shrink-0 rounded-md p-1.5 text-slate-600 hover:bg-slate-200"
-              aria-label="Rimuovi allegato"
+              aria-label="Remove attachment"
             >
               <X className="size-5" />
             </button>
@@ -383,7 +383,7 @@ export function ChatSection({
             className="shrink-0 rounded-lg border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
             disabled={sending}
             onClick={() => fileInputRef.current?.click()}
-            aria-label="Allega file"
+            aria-label="Attach file"
           >
             <Paperclip className="size-5" />
           </Button>
@@ -391,7 +391,7 @@ export function ChatSection({
             ref={draftInputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="Scrivi un messaggio al paziente…"
+            placeholder="Write a message to the patient…"
             rows={1}
             className={cn(
               "max-h-40 min-h-[46px] flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-base text-slate-900 shadow-sm md:px-4 md:py-3 md:text-lg",
@@ -412,7 +412,7 @@ export function ChatSection({
             size="icon-lg"
             className="h-12 min-w-12 shrink-0 rounded-lg bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
             disabled={!canSend}
-            aria-label="Invia messaggio"
+            aria-label="Send message"
           >
             {sending ? (
               <Loader2 className="size-5 animate-spin" />
@@ -427,7 +427,7 @@ export function ChatSection({
               key={label}
               type="button"
               disabled={sending}
-              title="Clic: inserisci nel messaggio · Maiusc+clic: invia subito"
+              title="Click: insert into the message · Shift+click: send now"
               onClick={(e) => {
                 void applyQuickReply(label, e.shiftKey);
               }}
@@ -439,8 +439,9 @@ export function ChatSection({
         </div>
         {!isCrm ? (
           <p className="mx-auto mt-3 max-w-3xl text-center text-sm text-slate-500">
-            Aggiornamenti in tempo reale sulla tabella{" "}
-            <code className="rounded bg-slate-100 px-1 text-slate-800">richieste</code>
+            Real-time updates on the{" "}
+            <code className="rounded bg-slate-100 px-1 text-slate-800">richieste</code>{" "}
+            table
           </p>
         ) : null}
       </form>

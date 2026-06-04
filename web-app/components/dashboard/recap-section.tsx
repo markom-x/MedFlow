@@ -81,7 +81,7 @@ export function RecapSection({
                 fascicoloLayout ? "text-sm" : "text-xs"
               )}
             >
-              Super riassunto IA
+              AI super summary
             </h2>
           </div>
           <p
@@ -92,7 +92,7 @@ export function RecapSection({
           >
             {superSummary ?? (
               <span className="font-normal text-slate-600">
-                Nessun riassunto IA disponibile per questo paziente.
+                No AI summary available for this patient yet.
               </span>
             )}
           </p>
@@ -106,7 +106,7 @@ export function RecapSection({
             narrow ? "text-sm" : fascicoloLayout ? "text-lg" : "text-base"
           )}
         >
-          {galleryVisualOnly ? "Galleria referti" : "Referti e allegati"}
+          {galleryVisualOnly ? "Reports gallery" : "Reports & attachments"}
         </h3>
         {mediaItems.length === 0 ? (
           <p
@@ -116,8 +116,8 @@ export function RecapSection({
             )}
           >
             {galleryVisualOnly
-              ? "Nessuna foto o PDF in archivio per questo paziente."
-              : "Nessun referto o allegato con URL media."}
+              ? "No photos or PDFs on file for this patient."
+              : "No reports or attachments with a media URL."}
           </p>
         ) : (
           <ul

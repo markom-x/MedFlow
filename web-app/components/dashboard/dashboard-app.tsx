@@ -43,7 +43,7 @@ export function DashboardApp() {
       setOrderedIds(ids);
     } catch (e) {
       const msg =
-        e instanceof Error ? e.message : "Errore durante il caricamento.";
+        e instanceof Error ? e.message : "Error while loading.";
       if (silent) {
         toast.error(msg);
       } else {
@@ -73,7 +73,7 @@ export function DashboardApp() {
     const { text, file } = payload;
     const trimmed = text.trim();
     if (!trimmed && !file) {
-      toast.error("Scrivi un messaggio o allega un file.");
+      toast.error("Write a message or attach a file.");
       return false;
     }
 
@@ -92,7 +92,7 @@ export function DashboardApp() {
           });
         if (uploadError) {
           toast.error(
-            `Upload non riuscito: ${uploadError.message}. Verifica policy sul bucket referti.`
+            `Upload failed: ${uploadError.message}. Check the policies on the "referti" bucket.`
           );
           return false;
         }
@@ -112,11 +112,11 @@ export function DashboardApp() {
         return false;
       }
 
-      toast.success("Messaggio inviato");
+      toast.success("Message sent");
       await load({ silent: true });
       return true;
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Errore imprevisto.");
+      toast.error(e instanceof Error ? e.message : "Unexpected error.");
       return false;
     } finally {
       setSending(false);
@@ -149,12 +149,12 @@ export function DashboardApp() {
         .update({ nome: normalizedName })
         .eq("id", patientId);
       if (error) throw error;
-      toast.success("Nome paziente aggiornato.");
+      toast.success("Patient name updated.");
     } catch (e) {
       setBuckets(previousBuckets);
       setOrderedIds(previousOrderedIds);
       toast.error(
-        e instanceof Error ? e.message : "Errore durante l'aggiornamento del nome."
+        e instanceof Error ? e.message : "Error while updating the name."
       );
     }
   }
@@ -163,7 +163,7 @@ export function DashboardApp() {
     return (
       <div className="flex h-full min-h-0 flex-1 items-center justify-center bg-slate-50 px-4">
         <Loader2 className="size-9 animate-spin text-blue-600" aria-hidden />
-        <span className="sr-only">Caricamento…</span>
+        <span className="sr-only">Loading…</span>
       </div>
     );
   }
@@ -177,7 +177,7 @@ export function DashboardApp() {
           onClick={() => void load()}
           className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-base font-medium text-blue-700 shadow-sm transition hover:bg-slate-50"
         >
-          Riprova
+          Retry
         </button>
       </div>
     );
@@ -188,8 +188,8 @@ export function DashboardApp() {
       <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-50 px-4 md:px-6">
         <div className="max-w-md rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
           <p className="text-base leading-relaxed text-slate-700">
-            Nessuna richiesta in archivio. Collega Supabase e importa i dati per vedere i
-            pazienti.
+            No records on file yet. Connect Supabase and import data to see your
+            patients.
           </p>
         </div>
       </div>
@@ -210,7 +210,7 @@ export function DashboardApp() {
           className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
         >
           <Menu className="size-4" />
-          Pazienti
+          Patients
         </button>
         {selectedBucket ? (
           <p className="line-clamp-1 text-right text-sm font-medium text-slate-700">
@@ -235,12 +235,12 @@ export function DashboardApp() {
       >
         <div className="flex h-full min-h-0 flex-col">
           <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:hidden">
-            <p className="text-sm font-semibold text-slate-800">Seleziona paziente</p>
+            <p className="text-sm font-semibold text-slate-800">Select patient</p>
             <button
               type="button"
               onClick={() => setMobileSidebarOpen(false)}
               className="rounded-md p-1.5 text-slate-600 hover:bg-slate-100"
-              aria-label="Chiudi elenco pazienti"
+              aria-label="Close patient list"
             >
               <X className="size-4" />
             </button>

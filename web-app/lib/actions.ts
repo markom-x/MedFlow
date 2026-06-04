@@ -24,7 +24,7 @@ function formatPostgrestError(err: PostgrestError): string {
   const parts = [err.message, err.details, err.hint].filter(
     (p): p is string => Boolean(p && String(p).trim())
   );
-  return parts.length ? parts.join(" — ") : "Errore sconosciuto dal database.";
+  return parts.length ? parts.join(" — ") : "Unknown database error.";
 }
 
 export type SendDoctorMessageInput = {
@@ -49,7 +49,7 @@ export async function sendDoctorMessage(
     return {
       ok: false,
       message:
-        "Twilio non configurato sul server (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER).",
+        "Twilio is not configured on the server (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER).",
     };
   }
 
@@ -57,7 +57,7 @@ export async function sendDoctorMessage(
   const url = input.urlPubblico?.trim() || null;
 
   if (!testo && !url) {
-    return { ok: false, message: "Inserisci un messaggio o un allegato." };
+    return { ok: false, message: "Type a message or add an attachment." };
   }
 
   const client = twilio(accountSid, authToken);
@@ -72,25 +72,18 @@ export async function sendDoctorMessage(
     });
   } catch (e) {
     const msg =
-      e instanceof Error ? e.message : "Errore Twilio durante l'invio del messaggio.";
+      e instanceof Error ? e.message : "Twilio error while sending the message.";
     return { ok: false, message: msg };
   }
 
-  /* --- Subito dopo Twilio: persistenza su richieste (service role) --- */
-  let messaggio_originale: string;
-  let riassunto_clinico: string;
-
-  if (url) {
-    messaggio_originale = testo
+  /* --- Right after Twilio: persist to "richieste" (service role) ---
+     Doctor replies are chat bubbles only: we leave riassunto_clinico empty so
+     they never override the AI clinical summary shown in the record. */
+  const messaggio_originale = url
+    ? testo
       ? `${MEDICO_MSG_PREFIX} ${testo}`
-      : MEDICO_FILE_SENT;
-    riassunto_clinico = testo
-      ? "Risposta del medico con allegato"
-      : "File inviato dal medico";
-  } else {
-    messaggio_originale = `${MEDICO_MSG_PREFIX} ${testo}`;
-    riassunto_clinico = "Risposta del medico";
-  }
+      : MEDICO_FILE_SENT
+    : `${MEDICO_MSG_PREFIX} ${testo}`;
 
   const medicoId = process.env.MEDICO_STUDIO_ID?.trim() || STUDIO_MEDICO_ID;
 
@@ -102,9 +95,9 @@ export async function sendDoctorMessage(
         paziente_id: input.pazienteId,
         medico_id: medicoId,
         messaggio_originale,
-        riassunto_clinico,
-        urgenza: "Bassa",
-        stato: "Gestito",
+        riassunto_clinico: "",
+        urgenza: null,
+        stato: "gestita",
         url_media: url,
       })
       .select("id")
@@ -113,7 +106,7 @@ export async function sendDoctorMessage(
     if (error) {
       return {
         ok: false,
-        message: `WhatsApp inviato correttamente, ma salvataggio su Supabase non riuscito: ${formatPostgrestError(error)}${error.code ? ` (codice: ${error.code})` : ""}`,
+        message: `WhatsApp sent successfully, but saving to Supabase failed: ${formatPostgrestError(error)}${error.code ? ` (code: ${error.code})` : ""}`,
       };
     }
 
@@ -121,22 +114,22 @@ export async function sendDoctorMessage(
       return {
         ok: false,
         message:
-          "WhatsApp inviato, ma Supabase non ha restituito l'id della riga inserita.",
+          "WhatsApp sent, but Supabase did not return the id of the inserted row.",
       };
     }
   } catch (e) {
     const hint =
       e instanceof Error &&
       e.message.includes("SUPABASE_SERVICE_ROLE_KEY")
-        ? " Verifica SUPABASE_SERVICE_ROLE_KEY e SUPABASE_URL in .env.local lato server."
+        ? " Check SUPABASE_SERVICE_ROLE_KEY and SUPABASE_URL in your server-side .env.local."
         : "";
     const msg =
       e instanceof Error
         ? e.message
-        : "Errore imprevisto durante l'INSERT su richieste.";
+        : "Unexpected error during the INSERT into 'richieste'.";
     return {
       ok: false,
-      message: `WhatsApp inviato, ma database: ${msg}.${hint}`,
+      message: `WhatsApp sent, but database: ${msg}.${hint}`,
     };
   }
 
@@ -164,7 +157,7 @@ export async function updatePatientPrivateNotes(
     if (error) {
       return {
         ok: false,
-        message: `Salvataggio note non riuscito: ${formatPostgrestError(error)}`,
+        message: `Failed to save notes: ${formatPostgrestError(error)}`,
       };
     }
     return { ok: true };
@@ -172,11 +165,11 @@ export async function updatePatientPrivateNotes(
     const msg =
       e instanceof Error
         ? e.message
-        : "Errore durante l'aggiornamento delle note.";
+        : "Error while updating the notes.";
     return {
       ok: false,
       message: msg.includes("SUPABASE_SERVICE_ROLE_KEY")
-        ? `${msg} Configura SUPABASE_SERVICE_ROLE_KEY sul server.`
+        ? `${msg} Configure SUPABASE_SERVICE_ROLE_KEY on the server.`
         : msg,
     };
   }

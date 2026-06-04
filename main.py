@@ -647,12 +647,13 @@ def _enqueue_process_message_job(
 
 def _extract_activation_medico_id(text: str) -> str | None:
     """
-    Estrae il codice da messaggi tipo:
-    'Attivazione <uuid-medico>'
+    Extracts the doctor code from messages like:
+    'Activation <doctor-uuid>' (English, current) or
+    'Attivazione <doctor-uuid>' (Italian, legacy/back-compat).
     """
     incoming = (text or "").strip()
     m = re.match(
-        r"^attivazione\s+([0-9a-fA-F-]{32,40})",
+        r"^(?:activation|attivazione)\s+([0-9a-fA-F-]{32,40})",
         incoming,
         flags=re.IGNORECASE,
     )
@@ -1381,33 +1382,37 @@ def twilio_webhook(
     if not supabase:
         _send_whatsapp_reply_and_log(
             from_phone,
-            "Errore temporaneo. Riprova tra poco o contatta il tuo medico.",
+            "Temporary error. Please try again shortly or contact your doctor.",
         )
         return Response(content=twiml, media_type="application/xml")
 
     # --- 1) Activation command ---
-    # Testo che inizia con "attivazione" (case insensitive): estrai UUID medico, collega/crea paziente.
-    if incoming_text.lower().startswith("attivazione"):
+    # Text starting with "activation"/"attivazione" (case insensitive): extract the
+    # doctor UUID and link/create the patient.
+    _incoming_lower = incoming_text.lower()
+    if _incoming_lower.startswith("activation") or _incoming_lower.startswith(
+        "attivazione"
+    ):
         activation_medico_id = _extract_activation_medico_id(incoming_text)
         if not activation_medico_id or not _is_valid_uuid(activation_medico_id):
             print(
-                f"ERRORE attivazione: UUID mancante/non valido nel testo: {incoming_text!r}",
+                f"ACTIVATION ERROR: missing/invalid UUID in text: {incoming_text!r}",
                 flush=True,
             )
             _send_whatsapp_reply_and_log(
                 from_phone,
-                "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
+                "Activation failed. Please check the code is correct or contact your doctor.",
             )
             return Response(content=twiml, media_type="application/xml")
 
         if not _medico_exists(activation_medico_id):
             print(
-                f"ERRORE attivazione: medico_id non trovato in tabella medici: {activation_medico_id}",
+                f"ACTIVATION ERROR: medico_id not found in 'medici' table: {activation_medico_id}",
                 flush=True,
             )
             _send_whatsapp_reply_and_log(
                 from_phone,
-                "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
+                "Activation failed. Please check the code is correct or contact your doctor.",
             )
             return Response(content=twiml, media_type="application/xml")
 
@@ -1416,12 +1421,12 @@ def twilio_webhook(
         )
         if not linked_pid or not linked_mid:
             print(
-                "ERRORE: attivazione richiesta ma link paziente-medico non riuscito.",
+                "ERROR: activation requested but patient-doctor link failed.",
                 flush=True,
             )
             _send_whatsapp_reply_and_log(
                 from_phone,
-                "Errore durante l'attivazione. Verifica che il codice sia corretto o contatta il medico.",
+                "Activation failed. Please check the code is correct or contact your doctor.",
             )
             return Response(content=twiml, media_type="application/xml")
 
@@ -1450,32 +1455,32 @@ def twilio_webhook(
                 medico_id=linked_mid,
             )
             print(
-                "[GDPR] Dopo attivazione: consenso mancante, template GDPR inviato e stop.",
+                "[GDPR] After activation: consent missing, GDPR template sent, stopping.",
                 flush=True,
             )
             return Response(content=twiml, media_type="application/xml")
 
         _send_whatsapp_reply_and_log(
             from_phone,
-            "Attivazione completata",
+            "Activation complete",
             paziente_id=linked_pid,
             medico_id=linked_mid,
         )
         return Response(content=twiml, media_type="application/xml")
 
-    # --- 2) Not linked yet (nessun comando di attivazione) ---
+    # --- 2) Not linked yet (no activation command) ---
     patient_row = fetch_paziente_if_exists(from_phone)
     if patient_row == "error":
         _send_whatsapp_reply_and_log(
             from_phone,
-            "Errore temporaneo. Riprova tra poco o contatta il tuo medico.",
+            "Temporary error. Please try again shortly or contact your doctor.",
         )
         return Response(content=twiml, media_type="application/xml")
 
     if patient_row is None or not patient_row[1]:
         _send_whatsapp_reply_and_log(
             from_phone,
-            "Benvenuto in MedFlow! Per iniziare, inviami il codice di attivazione che ti ha fornito il tuo medico.",
+            "Welcome to MedFlow! To get started, send me the activation code your doctor gave you.",
         )
         return Response(content=twiml, media_type="application/xml")
 
@@ -1488,9 +1493,14 @@ def twilio_webhook(
             only_if_current_null=True,
         )
 
-    # --- 3) Pending GDPR (collegato ma consenso assente) ---
+    # --- 3) Pending GDPR (linked but consent missing) ---
     if not gdpr_consent:
-        if incoming_text.lower() == "accetto":
+        if incoming_text.lower().strip() in {
+            "accept",
+            "i accept",
+            "i agree",
+            "accetto",
+        }:
             _log_conversation_turn(
                 paziente_id=paziente_id,
                 medico_id=medico_id,
@@ -1503,14 +1513,14 @@ def twilio_webhook(
             if updated:
                 _send_whatsapp_reply_and_log(
                     from_phone,
-                    "Grazie! Ora puoi scrivermi i tuoi sintomi.",
+                    "Thank you! You can now describe your symptoms.",
                     paziente_id=paziente_id,
                     medico_id=medico_id,
                 )
             else:
                 _send_whatsapp_reply_and_log(
                     from_phone,
-                    "Errore durante la registrazione del consenso. Riprova.",
+                    "Error while recording your consent. Please try again.",
                     paziente_id=paziente_id,
                     medico_id=medico_id,
                 )
@@ -1542,6 +1552,30 @@ def twilio_webhook(
         message_sid=MessageSid or None,
         url_media=media_url_clean,
     )
+    # Bridge to `richieste` so the inbound patient message is visible in the
+    # dashboard chat immediately (the chat reads `richieste`, while the agent
+    # works off `conversazioni`). riassunto_clinico is left empty so the bubble
+    # never overrides the AI clinical summary card. Media-only messages are
+    # surfaced with a placeholder; the attachment itself is handled by the agent.
+    try:
+        _bubble_text = (Body or "").strip() or (
+            "[Media attachment]" if incoming_media else ""
+        )
+        if _bubble_text:
+            insert_richiesta(
+                paziente_id=paziente_id,
+                medico_id=medico_id,
+                messaggio_originale=_bubble_text,
+                riassunto_clinico="",
+                urgenza=None,
+                url_media=None,
+            )
+    except Exception as e:
+        print(
+            f"[webhook] bridge inbound->richieste failed: {type(e).__name__}: {e}",
+            flush=True,
+        )
+
     enqueued = _enqueue_process_message_job(
         from_number=from_phone,
         body=Body,

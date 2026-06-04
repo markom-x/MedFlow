@@ -30,7 +30,7 @@ export function SignedPatientMedia({ storagePath, layout = "chat" }: Props) {
         )}
       >
         <Loader2 className="size-5 shrink-0 animate-spin" aria-hidden />
-        <span className="text-sm">Caricamento allegato…</span>
+        <span className="text-sm">Loading attachment…</span>
       </div>
     );
   }
@@ -66,7 +66,7 @@ export function SignedPatientMedia({ storagePath, layout = "chat" }: Props) {
           className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-base font-medium text-blue-700 underline-offset-2 hover:underline"
         >
           <FileText className="size-4 shrink-0 text-blue-600" aria-hidden />
-          Apri PDF
+          Open PDF
         </a>
       );
     }
@@ -77,7 +77,7 @@ export function SignedPatientMedia({ storagePath, layout = "chat" }: Props) {
         rel="noopener noreferrer"
         className="mt-2 inline-flex text-base font-medium text-blue-700 underline underline-offset-2 hover:text-blue-800"
       >
-        Scarica / apri PDF
+        Download / open PDF
       </a>
     );
   }

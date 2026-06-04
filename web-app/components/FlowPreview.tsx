@@ -59,7 +59,7 @@ const cardBlock = {
 };
 
 const MESSAGGIO =
-  "Dottore ho un dolore fortissimo al dente in basso a destra da ieri sera, ho preso due Oki ma non passa, che faccio?";
+  "Doctor, I've had a really bad pain in my lower right tooth since last night, I took two ibuprofen but it won't go away — what should I do?";
 
 function FlowConnector({
   className,
@@ -166,10 +166,10 @@ export function FlowPreview() {
         <div className="overflow-hidden rounded-[1.35rem] border border-slate-100/80 bg-gradient-to-br from-white via-slate-50/80 to-violet-50/30 p-6 md:p-10">
           <div className="mb-8 text-center md:mb-10 md:text-left">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Anteprima flusso
+              Flow preview
             </p>
             <p className="mt-1 text-lg font-semibold text-slate-900 md:text-xl">
-              Messaggio → scheda strutturata
+              Message → structured record
             </p>
           </div>
 
@@ -215,34 +215,34 @@ export function FlowPreview() {
               </div>
 
               <motion.div variants={rowReveal} className="mb-4">
-                <span className="inline-flex rounded-full bg-red-600 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white shadow-md shadow-red-600/25">
-                  Urgenza Alta
+                <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-violet-700">
+                  Structured summary
                 </span>
               </motion.div>
 
               <motion.div variants={rowReveal} className="space-y-1">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Paziente
+                  Patient
                 </p>
                 <p className="text-sm font-medium text-slate-900">
-                  Sconosciuto <span className="text-slate-500">(+39 333…)</span>
+                  Unknown <span className="text-slate-500">(+39 333…)</span>
                 </p>
               </motion.div>
 
               <motion.div variants={rowReveal} className="mt-4 space-y-1 border-t border-slate-200/50 pt-4">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Sintomi
+                  Symptoms
                 </p>
                 <p className="text-sm leading-snug text-slate-700">
-                  Dolore acuto molare inferiore destro
+                  Acute lower right molar pain
                 </p>
               </motion.div>
 
               <motion.div variants={rowReveal} className="mt-4 space-y-1 border-t border-slate-200/50 pt-4">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Farmaci
+                  Medications
                 </p>
-                <p className="text-sm text-slate-700">Ketoprofene (Oki) x2</p>
+                <p className="text-sm text-slate-700">Ibuprofen x2</p>
               </motion.div>
             </motion.div>
           </motion.div>

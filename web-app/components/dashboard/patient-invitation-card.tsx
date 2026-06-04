@@ -20,9 +20,9 @@ function buildPatientActivationWhatsAppUrl(
 ): string | null {
   const phone = waMePhoneDigits(twilioPhoneRaw);
   if (!phone || !medicoId) return null;
-  // Il backend (`Attivazione <uuid>`) verifica l'id contro `medici.id`, NON
-  // contro l'Auth UID: usiamo quindi l'id del medico dello studio.
-  const text = `Attivazione ${medicoId}`;
+  // The backend (`Activation <uuid>`) checks the id against `medici.id`, NOT the
+  // Auth UID: we therefore use the practice doctor's id.
+  const text = `Activation ${medicoId}`;
   return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
 }
 
@@ -67,8 +67,8 @@ export function PatientInvitationCard() {
     process.env.NEXT_PUBLIC_MEDICO_STUDIO_ID?.trim() || STUDIO_MEDICO_ID;
 
   const magicLink = useMemo(() => {
-    // Mostriamo l'invito solo a medico loggato, ma il codice di attivazione e'
-    // quello del medico (medici.id), non l'Auth UID.
+    // We only show the invite to a logged-in doctor, but the activation code is
+    // the doctor's id (medici.id), not the Auth UID.
     if (doctorUid == null) return null;
     return buildPatientActivationWhatsAppUrl(twilioPhone, medicoId);
   }, [twilioPhone, medicoId, doctorUid]);
@@ -78,10 +78,10 @@ export function PatientInvitationCard() {
     try {
       await navigator.clipboard.writeText(magicLink);
       setCopied(true);
-      toast.success("Link copiato negli appunti");
+      toast.success("Link copied to clipboard");
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
-      toast.error("Copia non riuscita. Seleziona il link manualmente.");
+      toast.error("Copy failed. Please select the link manually.");
     }
   }, [magicLink]);
 
@@ -96,7 +96,7 @@ export function PatientInvitationCard() {
           className="mx-auto max-w-5xl h-36 animate-pulse rounded-xl bg-slate-100"
           aria-hidden
         />
-        <span className="sr-only">Caricamento invito pazienti…</span>
+        <span className="sr-only">Loading patient invite…</span>
       </div>
     );
   }
@@ -109,11 +109,11 @@ export function PatientInvitationCard() {
     return (
       <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-3 md:px-6">
         <p className="mx-auto max-w-5xl text-sm text-amber-950">
-          Per generare il link di invito WhatsApp, imposta la variabile{" "}
+          To generate the WhatsApp invite link, set the{" "}
           <code className="rounded bg-amber-100/80 px-1.5 py-0.5 font-mono text-xs">
             NEXT_PUBLIC_TWILIO_PHONE_NUMBER
           </code>{" "}
-          (numero Twilio / sandbox in formato E.164, es.{" "}
+          variable (your Twilio / sandbox number in E.164 format, e.g.{" "}
           <span className="whitespace-nowrap font-mono text-xs">+14155238886</span>).
         </p>
       </div>
@@ -135,10 +135,10 @@ export function PatientInvitationCard() {
               </span>
               <div>
                 <h2 className="text-sm font-semibold tracking-tight md:text-base">
-                  Invito pazienti su WhatsApp
+                  Invite patients on WhatsApp
                 </h2>
                 <p className="text-xs text-emerald-50/95 md:text-sm">
-                  Link e QR con il tuo codice medico per l&apos;attivazione del bot
+                  Link and QR with your doctor code to activate the bot
                 </p>
               </div>
             </div>
@@ -170,26 +170,26 @@ export function PatientInvitationCard() {
                   {copied ? (
                     <>
                       <Check className="size-4 text-emerald-600" />
-                      Copiato
+                      Copied
                     </>
                   ) : (
                     <>
                       <Copy className="size-4" />
-                      Copia negli appunti
+                      Copy to clipboard
                     </>
                   )}
                 </Button>
               </div>
               <p className="text-xs leading-relaxed text-slate-500">
-                Condividi il link via email o appunti: aprendo WhatsApp, il paziente invierà il
-                messaggio precompilato{" "}
-                <span className="font-medium text-slate-700">Attivazione</span> seguito dal tuo
-                identificativo.
+                Share the link by email or clipboard: when the patient opens
+                WhatsApp, it pre-fills the message{" "}
+                <span className="font-medium text-slate-700">Activation</span> followed by your
+                doctor code.
               </p>
             </div>
 
             <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 p-4 print:border-slate-300">
-              <p className="text-center text-xs font-medium text-slate-600">QR per sala d&apos;attesa</p>
+              <p className="text-center text-xs font-medium text-slate-600">QR for the waiting room</p>
               <div className="rounded-lg bg-white p-2 shadow-sm print:shadow-none">
                 <QRCodeSVG
                   value={magicLink}
@@ -207,7 +207,7 @@ export function PatientInvitationCard() {
                 className="text-slate-600 print:hidden"
               >
                 <Printer className="size-3.5" />
-                Stampa QR
+                Print QR
               </Button>
             </div>
           </div>

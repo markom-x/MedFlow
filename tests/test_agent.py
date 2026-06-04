@@ -908,7 +908,7 @@ def test_run_for_job_text_path_invokes_retrieval_and_injects_context(
     rag_systems = [
         m
         for m in captured_messages["msgs"]
-        if isinstance(m, SystemMessage) and "Contesto storico paziente" in m.content
+        if isinstance(m, SystemMessage) and "Patient historical context" in m.content
     ]
     assert len(rag_systems) == 1
     assert "cefalea ricorrente" in rag_systems[0].content
@@ -923,7 +923,7 @@ def test_answer_fascicolo_query_empty_query_no_retrieval(
     monkeypatch.setattr(agent, "retrieve_relevant_chunks", mock_retrieve)
     out = agent.answer_fascicolo_query(PAZIENTE_ID, "a")
     assert out["sources"] == []
-    assert "specifica" in out["answer"].lower()
+    assert "specific" in out["answer"].lower()
     mock_retrieve.assert_not_called()
 
 
@@ -939,7 +939,7 @@ def test_answer_fascicolo_query_accepts_single_keyword(
     # passa la soglia bassa dedicata al fascicolo, non quella alta del RAG anamnesi
     assert mock_retrieve.call_args.kwargs["min_query_chars"] == agent.FASCICOLO_MIN_QUERY_CHARS
     # con 0 chunk -> messaggio "non trovato", non il messaggio "poco specifica"
-    assert "fascicolo" in out["answer"].lower()
+    assert "record" in out["answer"].lower()
 
 
 def test_answer_fascicolo_query_no_chunks_returns_not_found(
@@ -951,7 +951,7 @@ def test_answer_fascicolo_query_no_chunks_returns_not_found(
 
     out = agent.answer_fascicolo_query(PAZIENTE_ID, "qual e' l'ultimo valore di emoglobina?")
     assert out["sources"] == []
-    assert "fascicolo" in out["answer"].lower()
+    assert "record" in out["answer"].lower()
     # Niente chiamata LLM se non c'e' contesto.
     mock_llm.assert_not_called()
 
@@ -1037,7 +1037,7 @@ def test_answer_fascicolo_query_llm_error_is_safe(
     out = agent.answer_fascicolo_query(PAZIENTE_ID, "una domanda abbastanza lunga")
     assert out["sources"] == []
     assert out["error"] == "RuntimeError"
-    assert "errore" in out["answer"].lower()
+    assert "error" in out["answer"].lower()
 
 
 # --------------------------- backfill_fascicolo ---------------------------

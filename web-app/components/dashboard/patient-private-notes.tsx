@@ -41,7 +41,7 @@ export function PatientPrivateNotes({
         toast.error(result.message);
         return;
       }
-      toast.success("Note salvate");
+      toast.success("Notes saved");
       onSaved();
     } finally {
       setSaving(false);
@@ -69,7 +69,7 @@ export function PatientPrivateNotes({
               spacious ? "text-lg" : "text-sm"
             )}
           >
-            Note interne (visibili solo a te)
+            Internal notes (visible only to you)
           </h3>
           <p
             className={cn(
@@ -77,7 +77,7 @@ export function PatientPrivateNotes({
               spacious ? "mt-2 text-sm" : "mt-0.5 text-xs"
             )}
           >
-            Non inviate al paziente.
+            Not sent to the patient.
           </p>
         </div>
         {compact ? (
@@ -88,18 +88,18 @@ export function PatientPrivateNotes({
           >
             {expanded ? (
               <>
-                Comprimi <ChevronUp className="size-3.5" aria-hidden />
+                Collapse <ChevronUp className="size-3.5" aria-hidden />
               </>
             ) : (
               <>
-                Espandi <ChevronDown className="size-3.5" aria-hidden />
+                Expand <ChevronDown className="size-3.5" aria-hidden />
               </>
             )}
           </button>
         ) : null}
       </div>
       <label htmlFor="note-private" className="sr-only">
-        Note interne
+        Internal notes
       </label>
       <textarea
         id="note-private"
@@ -113,7 +113,7 @@ export function PatientPrivateNotes({
           !spacious && "px-2.5 py-2 text-sm",
           compact && "max-h-[min(40vh,22rem)] min-h-[4.5rem]"
         )}
-        placeholder="Es. allergie, preferenze, follow-up…"
+        placeholder="E.g. allergies, preferences, follow-up…"
       />
       <div className={cn("flex justify-end", spacious ? "mt-4" : "mt-2")}>
         <Button
@@ -126,10 +126,10 @@ export function PatientPrivateNotes({
           {saving ? (
             <>
               <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-              Salvataggio…
+              Saving…
             </>
           ) : (
-            "Salva"
+            "Save"
           )}
         </Button>
       </div>

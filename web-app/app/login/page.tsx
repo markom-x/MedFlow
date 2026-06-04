@@ -2,7 +2,7 @@
 
 import { Loader2, Mail, PlayCircle, ShieldCheck, Stethoscope } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useMemo, useState } from "react";
+import { FormEvent, Suspense, useState } from "react";
 import { toast } from "sonner";
 
 import { enterDemo } from "@/lib/actions/demo";
@@ -12,25 +12,23 @@ function LoginForm() {
   const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
-  const [demoCode, setDemoCode] = useState("");
   const [demoPending, setDemoPending] = useState(false);
 
   async function onEnterDemo() {
     setDemoPending(true);
     try {
-      const res = await enterDemo(demoCode.trim() || undefined);
-      // In caso di successo il server reindirizza a /dashboard automaticamente.
+      const res = await enterDemo();
+      // On success the server redirects to /dashboard automatically.
       if (res && res.ok === false) {
         toast.error(res.error);
       }
     } catch {
-      toast.error("Accesso demo non riuscito. Riprova.");
+      toast.error("Demo sign-in failed. Please try again.");
     } finally {
       setDemoPending(false);
     }
   }
 
-  const nextPath = useMemo(() => params.get("next") || "/", [params]);
   const hasInvalidLinkError =
     params.get("error") === "link_non_valido_o_scaduto";
 
@@ -38,7 +36,7 @@ function LoginForm() {
     e.preventDefault();
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail) {
-      toast.error("Inserisci un indirizzo email valido.");
+      toast.error("Enter a valid email address.");
       return;
     }
 
@@ -53,15 +51,15 @@ function LoginForm() {
       });
 
       if (error) {
-        toast.error(`Invio non riuscito: ${error.message}`);
+        toast.error(`Could not send link: ${error.message}`);
         return;
       }
 
-      toast.success("Link inviato! Controlla la tua email.");
+      toast.success("Link sent! Check your email.");
       setEmail("");
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Errore imprevisto.";
+        error instanceof Error ? error.message : "Unexpected error.";
       toast.error(message);
     } finally {
       setSending(false);
@@ -93,23 +91,54 @@ function LoginForm() {
           </div>
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
-              Accedi a MedFlow
+              Sign in to MedFlow
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Login sicuro con Magic Link Supabase in ambiente protetto.
+              Try the live demo in one click, or sign in with a secure Supabase
+              magic link.
             </p>
           </div>
         </div>
 
         {hasInvalidLinkError ? (
           <div className="mb-4 rounded-2xl border border-amber-200/80 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-900 shadow-sm backdrop-blur-sm">
-            Il link e&apos; scaduto o non valido. Richiedine uno nuovo.
+            The link is expired or invalid. Please request a new one.
           </div>
         ) : null}
 
+        <button
+          type="button"
+          onClick={() => void onEnterDemo()}
+          disabled={demoPending}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-blue-600 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 ring-1 ring-white/20 transition hover:scale-[1.02] hover:shadow-xl hover:shadow-blue-600/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
+        >
+          {demoPending ? (
+            <>
+              <Loader2 className="size-4 animate-spin" />
+              Signing in...
+            </>
+          ) : (
+            <>
+              <PlayCircle className="size-5" />
+              Enter the demo
+            </>
+          )}
+        </button>
+        <p className="mt-2 text-center text-xs leading-relaxed text-slate-500">
+          Opens the doctor dashboard instantly — no email required.
+        </p>
+
+        <div className="my-6 flex items-center gap-3">
+          <span className="h-px flex-1 bg-slate-200/80" />
+          <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            or sign in with email
+          </span>
+          <span className="h-px flex-1 bg-slate-200/80" />
+        </div>
+
         <form className="space-y-4" onSubmit={onSubmit}>
           <label className="block text-sm font-semibold text-slate-700" htmlFor="email">
-            Email professionale
+            Work email
           </label>
           <div className="relative">
             <Mail className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
@@ -118,7 +147,7 @@ function LoginForm() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="medico@studio.it"
+              placeholder="doctor@practice.com"
               className="w-full rounded-xl border-0 bg-slate-100/90 py-3 pl-10 pr-3 text-sm text-slate-900 shadow-inner shadow-slate-900/[0.03] ring-1 ring-slate-200/60 transition-all placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
               autoComplete="email"
               required
@@ -128,66 +157,25 @@ function LoginForm() {
           <button
             type="submit"
             disabled={sending}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 ring-1 ring-white/20 transition hover:scale-[1.02] hover:shadow-xl hover:shadow-blue-600/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {sending ? (
               <>
                 <Loader2 className="size-4 animate-spin" />
-                Invio in corso...
+                Sending...
               </>
             ) : (
               <>
                 <ShieldCheck className="size-4" />
-                Invia Link di Accesso
+                Send sign-in link
               </>
             )}
           </button>
         </form>
 
         <p className="mt-5 text-xs leading-relaxed text-slate-500">
-          Riceverai un link monouso via email. Nessuna password da ricordare.
+          You&apos;ll get a one-time link by email. No password to remember.
         </p>
-
-        <div className="my-6 flex items-center gap-3">
-          <span className="h-px flex-1 bg-slate-200/80" />
-          <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
-            oppure
-          </span>
-          <span className="h-px flex-1 bg-slate-200/80" />
-        </div>
-
-        <div className="rounded-2xl border border-violet-100/80 bg-gradient-to-br from-violet-50/60 to-white p-4 shadow-sm">
-          <p className="text-sm font-semibold text-slate-800">Accesso demo</p>
-          <p className="mt-1 text-xs leading-relaxed text-slate-500">
-            Entra subito nella dashboard di prova come medico, senza email.
-          </p>
-          <input
-            type="text"
-            value={demoCode}
-            onChange={(e) => setDemoCode(e.target.value)}
-            placeholder="Codice demo (se richiesto)"
-            className="mt-3 w-full rounded-xl border-0 bg-slate-100/90 px-3 py-2.5 text-sm text-slate-900 shadow-inner ring-1 ring-slate-200/60 transition-all placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
-            autoComplete="off"
-          />
-          <button
-            type="button"
-            onClick={() => void onEnterDemo()}
-            disabled={demoPending}
-            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full border border-violet-200 bg-white px-5 py-3 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {demoPending ? (
-              <>
-                <Loader2 className="size-4 animate-spin" />
-                Accesso in corso...
-              </>
-            ) : (
-              <>
-                <PlayCircle className="size-4" />
-                Entra nella demo
-              </>
-            )}
-          </button>
-        </div>
       </section>
     </main>
   );
@@ -211,7 +199,7 @@ export default function LoginPage() {
           </div>
           <div className="relative z-10 inline-flex items-center gap-2 rounded-3xl border border-white/40 bg-white/70 px-5 py-3.5 text-sm font-medium text-slate-700 shadow-2xl shadow-slate-900/[0.08] backdrop-blur-xl">
             <Loader2 className="size-4 animate-spin text-violet-600" />
-            Caricamento pagina di accesso...
+            Loading sign-in page...
           </div>
         </main>
       }

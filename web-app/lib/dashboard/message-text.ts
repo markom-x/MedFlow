@@ -1,18 +1,19 @@
 import { MEDICO_FILE_SENT, MEDICO_MSG_PREFIX } from "./constants";
 
-/** Placeholder lato backend quando c'è solo un allegato senza caption (es. immagine). */
+/** Backend placeholder when there is only an attachment without a caption (e.g. an image). */
 export function isAllegatoMultimedialePlaceholder(text: string): boolean {
-  return text.trim() === "[Allegato Multimediale]";
+  const t = text.trim();
+  return t === "[Media attachment]" || t === "[Allegato Multimediale]";
 }
 
-/** Testo mostrato nel bubble (senza prefisso operatore per i messaggi medico). */
+/** Text shown in the bubble (without the operator prefix for doctor messages). */
 export function bubbleMessageText(raw: string, isMedico: boolean): string {
-  const t = raw.trim() || "[Messaggio vuoto]";
+  const t = raw.trim() || "[Empty message]";
   if (isMedico && t === MEDICO_FILE_SENT) {
-    return "Allegato inviato dal medico";
+    return "Attachment sent by the doctor";
   }
   if (isMedico && t.startsWith(MEDICO_MSG_PREFIX)) {
-    return t.slice(MEDICO_MSG_PREFIX.length).trim() || "[Messaggio vuoto]";
+    return t.slice(MEDICO_MSG_PREFIX.length).trim() || "[Empty message]";
   }
   return t;
 }

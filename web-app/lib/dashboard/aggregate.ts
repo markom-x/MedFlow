@@ -1,11 +1,5 @@
 import type { PatientProfile, PazienteNested, RichiestaRow } from "./types";
-import {
-  cleanPhone,
-  needsAttention,
-  normalizeUrgenza,
-  patientDisplayName,
-  type UrgencyLevel,
-} from "./format";
+import { cleanPhone, needsAttention, patientDisplayName } from "./format";
 
 export type PatientBucket = {
   profile: PatientProfile;
@@ -102,7 +96,7 @@ export function lastMessagePreview(requests: RichiestaRow[]): string {
       new Date(y.created_at).getTime() - new Date(x.created_at).getTime()
   );
   const raw = sorted[0]?.messaggio_originale?.trim();
-  if (!raw) return "Nessun messaggio";
+  if (!raw) return "No messages";
   const max = 72;
   return raw.length > max ? `${raw.slice(0, max)}…` : raw;
 }
@@ -119,7 +113,7 @@ export function latestClinicalSummary(requests: RichiestaRow[]): string | null {
   return null;
 }
 
-/** Richiesta finalizzata piu' recente (con sintesi clinica). */
+/** Most recent finalized request (carrying a clinical summary). */
 export function latestFinalizedRequest(
   requests: RichiestaRow[]
 ): RichiestaRow | null {
@@ -131,16 +125,4 @@ export function latestFinalizedRequest(
     if (r.riassunto_clinico?.trim()) return r;
   }
   return null;
-}
-
-/** Urgenza piu' alta tra tutte le richieste del paziente (alta > media > bassa). */
-export function highestUrgenza(requests: RichiestaRow[]): UrgencyLevel | null {
-  const rank: Record<UrgencyLevel, number> = { alta: 3, media: 2, bassa: 1 };
-  let best: UrgencyLevel | null = null;
-  for (const r of requests) {
-    const u = normalizeUrgenza(r.urgenza);
-    if (!u) continue;
-    if (!best || rank[u] > rank[best]) best = u;
-  }
-  return best;
 }

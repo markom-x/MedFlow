@@ -7,14 +7,14 @@ import { getSupabaseAuthServerClient } from "@/lib/supabase/auth-server";
 export type EnterDemoResult = { ok: false; error: string } | void;
 
 /**
- * Login "one-click" per la demo: autentica un account medico demo pre-seedato
- * (email+password in env, lato server) e imposta i cookie di sessione, cosi' il
- * founder entra nella dashboard senza email ne' password da digitare.
+ * One-click demo login: authenticates a pre-seeded demo doctor account
+ * (email+password from server-side env) and sets the session cookies, so the
+ * founder enters the dashboard without typing email or password.
  *
- * Protezione opzionale: se DEMO_ACCESS_PASSPHRASE e' impostata, va fornita.
- * Credenziali e passphrase restano server-side (mai esposte al browser).
+ * Credentials stay server-side (never exposed to the browser). No passphrase is
+ * required: the demo button is the primary, frictionless entry point.
  */
-export async function enterDemo(passphrase?: string): Promise<EnterDemoResult> {
+export async function enterDemo(): Promise<EnterDemoResult> {
   const email = process.env.DEMO_DOCTOR_EMAIL;
   const password = process.env.DEMO_DOCTOR_PASSWORD;
 
@@ -22,21 +22,16 @@ export async function enterDemo(passphrase?: string): Promise<EnterDemoResult> {
     return {
       ok: false,
       error:
-        "Demo non configurata: imposta DEMO_DOCTOR_EMAIL e DEMO_DOCTOR_PASSWORD.",
+        "Demo not configured: set DEMO_DOCTOR_EMAIL and DEMO_DOCTOR_PASSWORD.",
     };
-  }
-
-  const required = process.env.DEMO_ACCESS_PASSPHRASE;
-  if (required && (passphrase ?? "").trim() !== required) {
-    return { ok: false, error: "Codice demo non valido." };
   }
 
   const supabase = await getSupabaseAuthServerClient();
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
-    return { ok: false, error: `Accesso demo non riuscito: ${error.message}` };
+    return { ok: false, error: `Demo sign-in failed: ${error.message}` };
   }
 
-  // redirect() lancia internamente: va chiamato fuori da try/catch.
+  // redirect() throws internally: it must be called outside try/catch.
   redirect("/dashboard");
 }

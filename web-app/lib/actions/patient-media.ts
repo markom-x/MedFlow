@@ -18,7 +18,7 @@ export async function createPatientMediaSignedUrl(
 ): Promise<PatientMediaSignedUrlResult> {
   const raw = storagePath.trim();
   if (!raw) {
-    return { ok: false, message: "Percorso media mancante." };
+    return { ok: false, message: "Missing media path." };
   }
 
   const auth = await getSupabaseAuthServerClient();
@@ -28,7 +28,7 @@ export async function createPatientMediaSignedUrl(
   } = await auth.auth.getUser();
 
   if (userError || !user) {
-    return { ok: false, message: "Sessione non valida." };
+    return { ok: false, message: "Invalid session." };
   }
 
   if (/^https?:\/\//i.test(raw)) {
@@ -46,18 +46,18 @@ export async function createPatientMediaSignedUrl(
     if (error) {
       return {
         ok: false,
-        message: error.message || "Impossibile generare URL firmato.",
+        message: error.message || "Could not generate a signed URL.",
       };
     }
 
     if (!data?.signedUrl) {
-      return { ok: false, message: "URL firmato non disponibile." };
+      return { ok: false, message: "Signed URL not available." };
     }
 
     return { ok: true, signedUrl: data.signedUrl };
   } catch (e) {
     const msg =
-      e instanceof Error ? e.message : "Errore durante la firma dell’URL.";
+      e instanceof Error ? e.message : "Error while signing the URL.";
     return {
       ok: false,
       message: msg.includes("SUPABASE_SERVICE_ROLE_KEY")

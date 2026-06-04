@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CRM Medico · WhatsApp",
-  description: "Fascicolo paziente, priorità clinica e conversazione.",
+  title: "Doctor CRM · WhatsApp",
+  description: "Patient record, clinical priority and conversation.",
   manifest: "/manifest.json",
 };
 
@@ -32,7 +32,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="it"
+      lang="en"
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col font-sans">

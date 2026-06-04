@@ -70,6 +70,12 @@ from main import (
 
 # --------------------------- config / costanti ---------------------------
 
+# Bubble marker (doctor/right side, must match web-app MEDICO_MSG_PREFIX) used
+# when the agent logs the clinical-summary turn into `richieste`. Keeping it a
+# distinct marker avoids duplicating the patient's last message, which the
+# webhook already bridges into the dashboard chat.
+AGENT_SUMMARY_MARKER = "👨‍⚕️ You: 📋 Clinical summary updated"
+
 CHAT_MODEL = os.getenv("MEDFLOW_CHAT_MODEL", "gpt-4o")
 VISION_MODEL = os.getenv("MEDFLOW_VISION_MODEL", "gpt-4o")
 EMBEDDING_MODEL = os.getenv("MEDFLOW_EMBEDDING_MODEL", "text-embedding-3-small")
@@ -112,85 +118,89 @@ FASCICOLO_MIN_SIMILARITY = float(os.getenv("MEDFLOW_FASCICOLO_MIN_SIMILARITY", "
 # Qui una parola singola e mirata ("febbre", "allergie", "hb") e' legittima.
 FASCICOLO_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_FASCICOLO_MIN_QUERY_CHARS", "2"))
 
-ANAMNESIS_SYSTEM_PROMPT = """Sei un assistente medico che conduce un'anamnesi pre-visita
-per conto di un Medico di Medicina Generale. Parli al paziente via WhatsApp in italiano,
-in modo empatico, chiaro e professionale. Non sei il medico: non diagnostichi e non prescrivi.
+ANAMNESIS_SYSTEM_PROMPT = """You are a medical assistant conducting a pre-visit intake on
+behalf of a General Practitioner. You speak to the patient over WhatsApp in English, in an
+empathetic, clear and professional way. You are not the doctor: you do not diagnose and do
+not prescribe.
 
-Il tuo obiettivo: raccogliere in pochi turni le informazioni essenziali per il medico,
-tenendo conto di TUTTO il contesto disponibile: i messaggi precedenti del paziente, i
-referti allegati (testo OCR nei messaggi marcati [Referto...]), le trascrizioni dei vocali,
-ed eventuale storia clinica pregressa iniettata come messaggio di sistema dal sistema RAG.
+Your goal: gather, in a few turns, the essential information the doctor needs, taking into
+account ALL available context: the patient's previous messages, attached reports (OCR text
+in messages flagged with a "[Referto allegato — OCR | fonte_documento: ...]" header), voice
+note transcripts, and any prior clinical history injected as a system message by the RAG
+system.
 
-Per ogni turno decidi tra due azioni:
-  - "ask": UNA sola domanda mirata, breve, colloquiale. Non elencare, non sovraccaricare.
-           Non ripetere domande gia' risposte nei turni o nei referti: leggi prima cio'
-           che il paziente ha gia' detto/allegato. Approfondisci cio' che manca per il
-           medico (es. durata, intensita', sintomi associati, terapie in corso, allergie).
-  - "finalize": hai abbastanza per consegnare la sintesi al medico. Finalizza non appena
-                hai sintomi principali, durata, contesto e farmaci/red flags evidenti.
-                Non trascinare la conversazione: meglio poche domande utili.
+Each turn, choose one of two actions:
+  - "ask": ONE focused, short, conversational question. Do not list, do not overload.
+           Do not repeat questions already answered in earlier turns or in the reports:
+           read first what the patient has already said/attached. Probe what is still
+           missing for the doctor (e.g. duration, intensity, associated symptoms, current
+           therapies, allergies).
+  - "finalize": you have enough to hand the summary to the doctor. Finalize as soon as you
+                have the main symptoms, duration, context and any obvious medications/red
+                flags. Do not drag the conversation out: a few useful questions are better.
 
-Regole:
-- Una domanda per turno. Niente preamboli lunghi.
-- Se il paziente ha allegato un referto, integra quei valori nel ragionamento e, se serve,
-  chiedi solo il dettaglio clinico mancante (non chiedere dati gia' presenti nel referto).
-- Se sospetti red flag (dolore toracico, dispnea grave, deficit neurologici, emorragie,
-  perdita di coscienza, sintomi neurologici acuti), finalizza subito con urgenza 'alta'.
-- Se il medico e' gia' intervenuto in chat (messaggi del medico), non contraddirlo.
-- Mai mostrare PII di altri pazienti, mai inventare dati clinici.
+Rules:
+- One question per turn. No long preambles.
+- If the patient attached a report, integrate those values into your reasoning and, if
+  needed, ask only for the missing clinical detail (do not ask for data already in the report).
+- If you suspect red flags (chest pain, severe dyspnea, neurological deficits, hemorrhage,
+  loss of consciousness, acute neurological symptoms), finalize immediately with urgency 'alta'.
+- If the doctor has already stepped into the chat (doctor messages), do not contradict them.
+- Never reveal PII of other patients, never invent clinical data.
 
-Rispondi SEMPRE con l'output strutturato richiesto, non con testo libero.
+ALWAYS respond with the required structured output, not free text.
 """.strip()
 
 
-SYNTHESIZER_SYSTEM_PROMPT = """Sei l'agente di sintesi clinica di MedFlow. A partire
-dall'INTERA conversazione paziente-bot (e dal medico se intervenuto), dai referti allegati
-(testo OCR) e dalle trascrizioni dei vocali, produci una sintesi strutturata per il medico
-in italiano. Il medico la legge in pochi secondi: deve essere accurata, densa e fedele.
+SYNTHESIZER_SYSTEM_PROMPT = """You are MedFlow's clinical synthesis agent. From the ENTIRE
+patient-bot conversation (and the doctor, if they stepped in), the attached reports (OCR
+text) and the voice note transcripts, produce a structured summary for the doctor in
+English. The doctor reads it in seconds: it must be accurate, dense and faithful.
 
-Schema rigoroso (la dashboard del medico legge questi campi):
-- chief_complaint: motivo principale di contatto, una frase concisa.
-- history_of_present_illness: anamnesi della patologia attuale. Includi quando rilevanti:
-  esordio e durata, andamento, fattori scatenanti/allevianti, sintomi associati, e i valori
-  oggettivi presenti nei referti (es. "Hb 12.4 g/dL", "PA 150/95", "glicemia 180 mg/dL")
-  con la loro unita'. Riporta i dati, non interpretarli.
-- medications: farmaci citati dal paziente o nei referti (nome + eventuale dose).
-- red_flags: segnali di allarme emersi; lista vuota se nessuno.
-- livello_urgenza: 'alta' | 'media' | 'bassa' (minuscolo, italiano), coerente con i red flag.
-- sintesi_medica: 1-2 frasi clinico-sintetiche (max ~35 parole) che orientino subito il medico.
-- clinical_entities: elenco delle entita' cliniche OGGETTIVE emerse (esami di laboratorio e i
-  loro valori, parametri vitali, patologie remote/croniche, farmaci, diagnosi documentate).
-  Per ciascuna:
-    * description: il dato conciso con valore e unita' se presenti (es. "Hb 12.4 g/dL").
-    * category: tipo del dato (es. 'esame_laboratorio', 'patologia_remota', 'farmaco', 'diagnosi').
-    * source_reference: la PROVENIENZA documentale. I referti allegati ti arrivano come messaggi
-      marcati con un header del tipo [Referto allegato — OCR | fonte_documento: <PATH> | content_type: <CT>]
-      (per i PDF il testo contiene anche marcatori [Pagina N]). Quando un'entita' deriva da uno di
-      questi referti, popola source_reference con:
-        - url: ESATTAMENTE il valore <PATH> dell'header fonte_documento del referto da cui hai letto il dato;
-        - page: il numero della [Pagina N] vicino al dato per i PDF multipagina, altrimenti null.
-      Se invece il dato proviene dalla conversazione testuale o dai vocali del paziente (non da un
-      referto allegato), lascia source_reference a null. NON inventare URL o numeri di pagina.
+Strict schema (the doctor dashboard reads these fields):
+- chief_complaint: main reason for contact, one concise sentence.
+- history_of_present_illness: history of the present illness. Include when relevant:
+  onset and duration, course, triggering/relieving factors, associated symptoms, and the
+  objective values present in the reports (e.g. "Hb 12.4 g/dL", "BP 150/95", "glucose
+  180 mg/dL") with their units. Report the data, do not interpret it.
+- medications: medications mentioned by the patient or in the reports (name + dose if any).
+- red_flags: alarm signals that emerged; empty list if none.
+- livello_urgenza: 'alta' | 'media' | 'bassa' (lowercase internal codes), consistent with
+  the red flags. These are internal sorting codes, not shown to the doctor.
+- sintesi_medica: 1-2 concise clinical sentences (max ~35 words) that orient the doctor at once.
+- clinical_entities: list of the OBJECTIVE clinical entities that emerged (lab tests and
+  their values, vital signs, remote/chronic conditions, medications, documented diagnoses).
+  For each:
+    * description: the concise datum with value and unit if present (e.g. "Hb 12.4 g/dL").
+    * category: the datum type (e.g. 'esame_laboratorio', 'patologia_remota', 'farmaco', 'diagnosi').
+    * source_reference: the documentary PROVENANCE. Attached reports reach you as messages
+      flagged with a header like [Referto allegato — OCR | fonte_documento: <PATH> | content_type: <CT>]
+      (for PDFs the text also contains [Pagina N] markers). When an entity derives from one of
+      these reports, populate source_reference with:
+        - url: EXACTLY the <PATH> value from the report's fonte_documento header you read the datum from;
+        - page: the [Pagina N] number near the datum for multi-page PDFs, otherwise null.
+      If instead the datum comes from the patient's text conversation or voice notes (not from
+      an attached report), leave source_reference null. DO NOT invent URLs or page numbers.
 
-Vincoli:
-- USA SOLO le informazioni presenti nella conversazione e nei documenti. NON inventare valori,
-  diagnosi o farmaci non menzionati. Se un dato non e' disponibile, ometti il campo o lascialo vuoto.
-- Non includere PII (nome, cognome, telefono) nella sintesi.
+Constraints:
+- USE ONLY the information present in the conversation and the documents. DO NOT invent values,
+  diagnoses or medications not mentioned. If a datum is unavailable, omit the field or leave it empty.
+- Do not include PII (first name, last name, phone) in the summary.
 """.strip()
 
 
-FASCICOLO_QA_SYSTEM_PROMPT = """Sei l'assistente di consultazione del fascicolo clinico di MedFlow.
-Un medico ti fa una domanda sul paziente: rispondi USANDO ESCLUSIVAMENTE gli estratti del
-fascicolo che ti vengono forniti (referti OCR, sintesi di visite precedenti, note).
+FASCICOLO_QA_SYSTEM_PROMPT = """You are MedFlow's clinical-record consultation assistant.
+A doctor asks you a question about the patient: answer USING EXCLUSIVELY the record excerpts
+provided to you (OCR reports, summaries of previous visits, notes).
 
-Regole:
-- Non inventare e non usare conoscenza esterna al fascicolo. Se gli estratti non contengono
-  la risposta, dillo chiaramente ("Non risulta nel fascicolo del paziente.").
-- Riporta i valori e le frasi rilevanti cosi' come compaiono nel fascicolo (es. valori di
-  laboratorio con la loro unita' e data, se presente).
-- Rispondi in italiano, conciso e clinico, senza preamboli.
-- Sei uno strumento di consultazione: non formulare diagnosi nuove ne' prescrizioni, supporti
-  il giudizio del medico.
+Rules:
+- Do not invent and do not use knowledge outside the record. If the excerpts do not contain
+  the answer, say so clearly ("Not found in the patient's record.").
+- Report the relevant values and phrases as they appear in the record (e.g. lab values with
+  their unit and date, if present).
+- Answer in English, concise and clinical, without preambles.
+- You are a consultation tool: do not formulate new diagnoses or prescriptions; you support
+  the doctor's judgment.
 """.strip()
 
 
@@ -510,7 +520,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
     cleaned = (query or "").strip()
     if not paziente_id or len(cleaned) < FASCICOLO_MIN_QUERY_CHARS:
         return {
-            "answer": "Inserisci una domanda piu' specifica per interrogare il fascicolo.",
+            "answer": "Please enter a more specific question to query the record.",
             "sources": [],
         }
 
@@ -524,8 +534,8 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
     if not chunks:
         return {
             "answer": (
-                "Non ho trovato nulla nel fascicolo del paziente che risponda a questa "
-                "domanda. Potrebbe non essere ancora stato indicizzato un documento pertinente."
+                "I could not find anything in the patient's record that answers this "
+                "question. A relevant document may not have been indexed yet."
             ),
             "sources": [],
         }
@@ -535,15 +545,15 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         st = c.get("source_type") or "?"
         ts = c.get("created_at") or ""
         content = c.get("content") or ""
-        context_parts.append(f"[Fonte {i} | {st} | {ts}]\n{content}")
+        context_parts.append(f"[Source {i} | {st} | {ts}]\n{content}")
     context_block = "\n\n".join(context_parts)
 
     messages: list[BaseMessage] = [
         SystemMessage(content=FASCICOLO_QA_SYSTEM_PROMPT),
         HumanMessage(
             content=(
-                f"Domanda del medico:\n{cleaned}\n\n"
-                f"Estratti dal fascicolo del paziente:\n{context_block}"
+                f"Doctor's question:\n{cleaned}\n\n"
+                f"Excerpts from the patient's record:\n{context_block}"
             )
         ),
     ]
@@ -557,13 +567,13 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         )
         traceback.print_exc()
         return {
-            "answer": "Errore tecnico durante la consultazione del fascicolo. Riprova.",
+            "answer": "Technical error while querying the record. Please try again.",
             "sources": [],
             "error": type(e).__name__,
         }
 
     if not answer:
-        answer = "Non sono riuscito a formulare una risposta dal fascicolo."
+        answer = "I could not produce an answer from the record."
 
     sources = [
         {
@@ -1205,9 +1215,9 @@ def node_retrieval(state: AgentState) -> dict:
 
     rag_msg = SystemMessage(
         content=(
-            "Contesto storico paziente (recuperato via RAG, usalo SOLO se "
-            "clinicamente pertinente alla conversazione corrente, non ripeterlo "
-            "letteralmente al paziente):\n"
+            "Patient historical context (retrieved via RAG, use it ONLY if "
+            "clinically relevant to the current conversation, do not repeat it "
+            "verbatim to the patient):\n"
             f"{context_block}"
         )
     )
@@ -1591,7 +1601,7 @@ def run_for_job(payload: dict) -> dict:
             insert_richiesta(
                 paziente_id=pid,
                 medico_id=mid,
-                messaggio_originale=body or synthesis.get("chief_complaint", ""),
+                messaggio_originale=AGENT_SUMMARY_MARKER,
                 riassunto_clinico=synthesis.get("sintesi_medica"),
                 urgenza=synthesis.get("livello_urgenza"),
                 url_media=None,

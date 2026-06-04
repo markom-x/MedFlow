@@ -44,10 +44,10 @@ export default function DashboardPage() {
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 md:px-6">
         <div className="min-w-0">
           <h1 className="truncate text-base font-semibold text-slate-900 md:text-lg">
-            CRM Medico · MedFlow
+            Doctor CRM · MedFlow
           </h1>
           <p className="truncate text-xs text-slate-500">
-            Pazienti, messaggi WhatsApp e triage
+            Patients, WhatsApp messages and triage
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
@@ -63,7 +63,7 @@ export default function DashboardPage() {
             className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 shadow-sm transition hover:bg-emerald-100"
           >
             <QrCode className="size-4" aria-hidden />
-            <span>Invita Pazienti</span>
+            <span>Invite patients</span>
             <Link2 className="size-3.5 opacity-80" aria-hidden />
           </button>
           <button
@@ -73,7 +73,7 @@ export default function DashboardPage() {
             className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
           >
             <LogOut className="size-4" aria-hidden />
-            {signingOut ? "Uscita…" : "Logout"}
+            {signingOut ? "Signing out…" : "Logout"}
           </button>
         </div>
       </header>
@@ -85,7 +85,7 @@ export default function DashboardPage() {
           className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-3 backdrop-blur-sm sm:p-6"
           role="dialog"
           aria-modal="true"
-          aria-label="Invito pazienti"
+          aria-label="Invite patients"
           onClick={() => setIsInviteModalOpen(false)}
         >
           <div
@@ -94,16 +94,16 @@ export default function DashboardPage() {
           >
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-5">
               <p className="text-sm font-semibold text-slate-900 sm:text-base">
-                Onboarding Pazienti
+                Patient onboarding
               </p>
               <button
                 type="button"
                 onClick={() => setIsInviteModalOpen(false)}
                 className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
-                aria-label="Chiudi finestra invito pazienti"
+                aria-label="Close patient invite window"
               >
                 <X className="size-4" aria-hidden />
-                <span>Chiudi</span>
+                <span>Close</span>
               </button>
             </div>
             <PatientInvitationCard />

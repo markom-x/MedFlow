@@ -30,17 +30,17 @@ export async function queryFascicolo(
 ): Promise<QueryFascicoloResult> {
   const q = query.trim();
   if (!pazienteId || !q) {
-    return { ok: false, message: "Inserisci una domanda." };
+    return { ok: false, message: "Type a question." };
   }
 
-  // Richiede una sessione dashboard valida (oltre al middleware).
+  // Requires a valid dashboard session (on top of the middleware).
   const auth = await getSupabaseAuthServerClient();
   const {
     data: { user },
     error: userError,
   } = await auth.auth.getUser();
   if (userError || !user) {
-    return { ok: false, message: "Sessione non valida." };
+    return { ok: false, message: "Invalid session." };
   }
 
   const apiUrl = (process.env.MEDFLOW_API_URL || "http://localhost:8000").replace(
@@ -64,7 +64,7 @@ export async function queryFascicolo(
       const detail = (await res.text().catch(() => "")).slice(0, 300);
       return {
         ok: false,
-        message: `Consultazione non riuscita (${res.status}). ${detail}`.trim(),
+        message: `Query failed (${res.status}). ${detail}`.trim(),
       };
     }
 
@@ -79,7 +79,7 @@ export async function queryFascicolo(
     };
   } catch (e) {
     const msg =
-      e instanceof Error ? e.message : "Errore di rete verso il backend MedFlow.";
+      e instanceof Error ? e.message : "Network error reaching the MedFlow backend.";
     const unreachable =
       msg.includes("ECONNREFUSED") ||
       msg.includes("fetch failed") ||
@@ -87,7 +87,7 @@ export async function queryFascicolo(
     return {
       ok: false,
       message: unreachable
-        ? "Backend MedFlow non raggiungibile. Verifica MEDFLOW_API_URL."
+        ? "MedFlow backend unreachable. Check the MEDFLOW_API_URL setting."
         : msg,
     };
   }
