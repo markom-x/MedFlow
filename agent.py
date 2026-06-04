@@ -58,7 +58,6 @@ from main import (
     download_twilio_media_requests,
     get_paziente_by_phone,
     insert_richiesta,
-    openai_client,
     supabase,
     transcribe_audio_bytes_whisper,
     upload_bytes_to_supabase_bucket,
@@ -67,6 +66,18 @@ from main import (
     _normalize_content_type,
     _storage_relative_path,
 )
+
+
+def _resolve_openai_client():
+    """OpenAI client from main at call time.
+
+    Do NOT import openai_client at module level: agent loads while main is still
+    initializing, so the bound name would stay None even when OPENAI_API_KEY is set
+    (health check on main.openai_client would still show true).
+    """
+    import main as main_mod
+
+    return main_mod.openai_client
 
 # --------------------------- config / costanti ---------------------------
 
@@ -380,10 +391,11 @@ def chunk_text(
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
     """Batch-embed via OpenAI. Lista vuota se openai non e' configurato o errore."""
-    if not openai_client or not texts:
+    client = _resolve_openai_client()
+    if not client or not texts:
         return []
     try:
-        resp = openai_client.embeddings.create(
+        resp = client.embeddings.create(
             model=EMBEDDING_MODEL,
             input=texts,
         )
@@ -634,14 +646,18 @@ def _messages_to_openai_chat(messages: list[BaseMessage]) -> list[dict]:
     return out
 
 
-def _fascicolo_excerpt_fallback(chunks: list[dict], query: str) -> str:
-    """Risposta senza LLM: estratti pertinenti (se OpenAI non e' disponibile)."""
-    lines = [
-        "I could not run the AI summarizer on the web service. "
-        "Here are the most relevant excerpts from the record for your question:",
-        f'"{query}"',
-        "",
-    ]
+def _fascicolo_excerpt_fallback(
+    chunks: list[dict], query: str, *, llm_failed: bool = False
+) -> str:
+    """Risposta senza LLM: estratti pertinenti dal RAG."""
+    if llm_failed:
+        intro = (
+            "The AI answer could not be generated right now. "
+            "Here are the most relevant excerpts from the record:"
+        )
+    else:
+        intro = "Relevant excerpts from the record for your question:"
+    lines = [intro, f'"{query}"', ""]
     for i, c in enumerate(chunks[:5], start=1):
         st = c.get("source_type") or "source"
         content = (c.get("content") or "").strip()
@@ -656,8 +672,9 @@ def _generate_fascicolo_answer(messages: list[BaseMessage]) -> str:
     Usa `openai_client` da main.py (stesso path della sintesi legacy) per
     evitare problemi LangChain sul web service Render. Fallback su ChatOpenAI.
     """
-    if openai_client:
-        resp = openai_client.chat.completions.create(
+    client = _resolve_openai_client()
+    if client:
+        resp = client.chat.completions.create(
             model=CHAT_MODEL,
             messages=_messages_to_openai_chat(messages),
             temperature=0,
@@ -763,13 +780,13 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         ),
     ]
 
-    if not openai_client:
+    if not _resolve_openai_client():
         print(
             "[agent] fascicolo: OPENAI_API_KEY assente su QUESTO servizio "
             "(web service Render, non il worker). Uso estratti senza LLM.",
             flush=True,
         )
-        answer = _fascicolo_excerpt_fallback(chunks, cleaned)
+        answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=False)
         sources = [
             {
                 "source_type": c.get("source_type"),
@@ -790,10 +807,10 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             flush=True,
         )
         traceback.print_exc()
-        answer = _fascicolo_excerpt_fallback(chunks, cleaned)
+        answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=True)
 
     if not answer:
-        answer = _fascicolo_excerpt_fallback(chunks, cleaned)
+        answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=True)
 
     sources = [
         {

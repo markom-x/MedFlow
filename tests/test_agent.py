@@ -455,7 +455,7 @@ def _fake_embedding(dim: int = 1536, seed: float = 0.1) -> list[float]:
 def test_embed_texts_returns_empty_when_no_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(agent, "openai_client", None)
+    monkeypatch.setattr(agent, "_resolve_openai_client", lambda: None)
     assert agent._embed_texts(["ciao"]) == []
     assert agent._embed_text("ciao") is None
 
@@ -470,7 +470,7 @@ def test_embed_texts_batches_and_returns_lists(
     ]
     fake_client = MagicMock()
     fake_client.embeddings.create.return_value = fake_resp
-    monkeypatch.setattr(agent, "openai_client", fake_client)
+    monkeypatch.setattr(agent, "_resolve_openai_client", lambda: fake_client)
 
     out = agent._embed_texts(["a", "b"])
     assert len(out) == 2
@@ -1030,7 +1030,7 @@ def test_answer_fascicolo_query_llm_error_is_safe(
     )
 
     monkeypatch.setattr(agent, "_count_anamnesi_chunks", MagicMock(return_value=1))
-    monkeypatch.setattr(agent, "openai_client", MagicMock())
+    monkeypatch.setattr(agent, "_resolve_openai_client", lambda: MagicMock())
 
     out = agent.answer_fascicolo_query(PAZIENTE_ID, "una domanda abbastanza lunga")
     assert len(out["sources"]) == 1
