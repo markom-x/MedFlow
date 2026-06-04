@@ -100,6 +100,14 @@ export function lastMessagePreview(requests: RichiestaRow[]): string {
   const lastMessage = sorted.find(
     (r) => (r.messaggio_originale ?? "").trim() !== AGENT_SUMMARY_MARKER
   );
+  if (lastMessage?.url_media?.trim()) {
+    const leaf =
+      lastMessage.url_media.split("/").pop()?.trim() ||
+      lastMessage.url_media.trim();
+    const max = 56;
+    const name = leaf.length > max ? `${leaf.slice(0, max)}…` : leaf;
+    return `📎 ${name}`;
+  }
   const raw = lastMessage?.messaggio_originale?.trim();
   if (!raw) return "No messages";
   const max = 72;

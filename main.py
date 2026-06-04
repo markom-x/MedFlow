@@ -36,7 +36,7 @@ def healthcheck_root() -> dict:
     return {
         "status": "ok",
         "service": "MedFlow API",
-        "build": "2026-06-04-fascicolo-synthesize",
+        "build": "2026-06-04-fascicolo-polish",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "supabase_configured": bool(
             os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY")

@@ -2,13 +2,13 @@ import type { ReactNode } from "react";
 
 /** Intro phrases returned by the fascicolo synthesizer (shown slightly muted). */
 const ANSWER_PREFIX_RE =
-  /^(From the patient(?:'s)? record:\s*|Based on the record —\s*|Body temperature documented in the record:\s*|The patient reported:\s*|Clinical summary:\s*)/i;
+  /^(From the patient(?:'s)? record:\s*|Based on the record —\s*|Body temperature documented in the record:\s*|The most recent body temperature reported by the patient\s*|The latest body temperature noted in the clinical summary\s*|The patient reported:\s*|Clinical summary:\s*)/i;
 
 /**
  * Values worth a subtle highlight: vitals, labs, BP, doses, quoted patient text.
  */
 const VALUE_HIGHLIGHT_RE =
-  /("(?:[^"]*)"|'(?:[^']*)'|\b\d{2,3}\/\d{2,3}\b|\b\d+(?:\.\d+)?(?:\s*(?:°[CF]|U\/L|mg\/L|g\/dL|mmol\/L|mmHg|\/μL|%))?)/gi;
+  /("(?:[^"]*)"|'(?:[^']*)'|\b\d{2,3}\/\d{2,3}\b|\b\d+(?:\.\d+)?\s*(?:g\/dL|mg\/L|U\/L|mmol\/L|mmHg|\/μL)\b|\b\d+(?:\.\d+)?\s*°[CF]\b|\b\d+(?:\.\d+)?(?=\s*(?:mg|mcg|units?)\b))/gi;
 
 function splitHighlightedSpans(text: string): { highlight: boolean; value: string }[] {
   const parts: { highlight: boolean; value: string }[] = [];

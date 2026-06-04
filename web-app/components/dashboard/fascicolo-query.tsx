@@ -10,6 +10,7 @@ import {
   type FascicoloSource,
 } from "@/lib/actions/fascicolo";
 import { FascicoloAnswerDisplay } from "@/lib/dashboard/fascicolo-answer-display";
+import { dedupeFascicoloSources } from "@/lib/dashboard/dedupe-fascicolo-sources";
 
 type Props = {
   pazienteId: string;
@@ -63,7 +64,7 @@ export function FascicoloQuery({ pazienteId }: Props) {
         return;
       }
       setAnswer(result.answer);
-      setSources(result.sources);
+      setSources(dedupeFascicoloSources(result.sources));
     } finally {
       setLoading(false);
     }

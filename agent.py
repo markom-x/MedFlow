@@ -37,6 +37,7 @@ I prompt sono placeholder: vanno raffinati clinicamente nei PR successivi.
 from __future__ import annotations
 
 import base64
+import difflib
 import os
 import re
 import traceback
@@ -663,6 +664,83 @@ def _messages_to_openai_chat(messages: list[BaseMessage]) -> list[dict]:
 
 
 # Lab / OCR synthesis for Ask the record (no LLM required).
+_FASCICOLO_QUERY_TYPO_FIXES: dict[str, str] = {
+    "hemoglbin": "hemoglobin",
+    "haemoglibin": "hemoglobin",
+    "hemoglobn": "hemoglobin",
+    "temperture": "temperature",
+    "temprature": "temperature",
+}
+
+_FASCICOLO_QUERY_VOCAB: tuple[str, ...] = (
+    "hemoglobin",
+    "haemoglobin",
+    "hemoglobina",
+    "emoglobina",
+    "temperature",
+    "body temperature",
+    "fever",
+    "amylase",
+    "lipase",
+    "glucose",
+    "creatinine",
+    "platelets",
+    "crp",
+    "alt",
+    "wbc",
+    "allergy",
+    "allergies",
+    "medication",
+    "period",
+    "periods",
+)
+
+
+def _fascicolo_canonicalize_query(query: str) -> str:
+    """Fix common typos (e.g. hemoglbin) so retrieval and lab routing still work."""
+    raw = (query or "").strip()
+    if not raw:
+        return raw
+    parts: list[str] = []
+    for token in re.split(r"(\s+)", raw):
+        if not token.strip():
+            parts.append(token)
+            continue
+        low = token.lower()
+        if low in _FASCICOLO_QUERY_TYPO_FIXES:
+            parts.append(_FASCICOLO_QUERY_TYPO_FIXES[low])
+            continue
+        if len(low) >= 4:
+            match = difflib.get_close_matches(
+                low, _FASCICOLO_QUERY_VOCAB, n=1, cutoff=0.72
+            )
+            if match:
+                parts.append(match[0])
+                continue
+        parts.append(token)
+    return "".join(parts)
+
+
+def _dedupe_fascicolo_sources(
+    sources: list[dict], *, limit: int = 3
+) -> list[dict]:
+    """One chip per (source_type, day) — avoids 8 identical Visit summary tags."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+    for s in sources:
+        st = (s.get("source_type") or "source").strip()
+        day = (s.get("created_at") or "")[:10]
+        key = (st, day)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+# Lab / OCR synthesis for Ask the record (no LLM required).
 _FASCICOLO_LAB_TESTS: list[tuple[str, str]] = [
     ("hemoglobin", "hemoglobin"),
     ("haemoglobin", "hemoglobin"),
@@ -704,8 +782,33 @@ def _normalize_fascicolo_text(text: str) -> str:
     return s
 
 
+def _extract_hemoglobin_reading(blob: str) -> str | None:
+    """Value with unit when present (e.g. 10.1 g/dL)."""
+    patterns = (
+        r"(?:emoglobina|hemoglobin|haemoglobin|hgb)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(g/dL|g\/dl)",
+        r"\bHb\s*(\d+(?:\.\d+)?)\s*(g/dL|g\/dl)",
+        r"\bhb\s*(\d+(?:\.\d+)?)\s*(g/dL|g\/dl)",
+        r"(?:emoglobina|hemoglobin)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(g/dL|g\/dl)",
+    )
+    for pat in patterns:
+        m = re.search(pat, blob, re.I)
+        if m:
+            unit = (m.group(2) or "g/dL").replace("\\/", "/")
+            return f"{m.group(1)} {unit}"
+    m = re.search(
+        r"(?:emoglobina|hemoglobin|hgb)\s*[:=]?\s*(\d+(?:\.\d+)?)",
+        blob,
+        re.I,
+    )
+    if m:
+        return f"{m.group(1)} g/dL"
+    return None
+
+
 def _query_targets_lab_tests(query: str) -> set[str]:
-    q = _normalize_fascicolo_text((query or "").lower())
+    q = _normalize_fascicolo_text(
+        _fascicolo_canonicalize_query(query or "").lower()
+    )
     qwords = {w for w in re.split(r"\W+", q) if len(w) >= 2}
     targets: set[str] = set()
     for phrase, key in _FASCICOLO_LAB_TESTS:
@@ -774,11 +877,8 @@ def _format_lab_answer(test_key: str, values: list[str]) -> str:
     }
     name = labels.get(test_key, test_key.replace("_", " ").title())
     if len(values) >= 2:
-        return (
-            f"{name}: admission {values[0]}, discharge {values[1]} "
-            f"(values from the indexed discharge document)."
-        )
-    return f"{name}: {values[0]} (from the indexed record)."
+        return f"{name}: admission {values[0]}, discharge {values[1]}."
+    return f"{name}: {values[0]}."
 
 
 def _fascicolo_synthesize_from_chunks(query: str, chunks: list[dict]) -> str | None:
@@ -810,15 +910,11 @@ def _fascicolo_synthesize_from_chunks(query: str, chunks: list[dict]) -> str | N
         lines: list[str] = []
         missing: list[str] = []
         for key in sorted(targets):
-            vals = list(labs.get(key) or [])
-            if not vals and key == "hemoglobin":
-                m = re.search(
-                    r"(?:emoglobina|hemoglobin|hgb)\s*[:=]?\s*(\d+(?:\.\d+)?)",
-                    blob,
-                    re.I,
-                )
-                if m:
-                    vals = [m.group(1)]
+            if key == "hemoglobin":
+                hb = _extract_hemoglobin_reading(blob)
+                vals = [hb] if hb else list(labs.get(key) or [])
+            else:
+                vals = list(labs.get(key) or [])
             if vals:
                 lines.append(_format_lab_answer(key, vals))
             else:
@@ -889,16 +985,19 @@ def _fascicolo_direct_answer(query: str, chunks: list[dict]) -> str | None:
     """
     if not chunks:
         return None
-    q = (query or "").strip().lower()
+    q = _fascicolo_canonicalize_query(query).strip().lower()
     qwords = {w for w in re.split(r"\W+", q) if len(w) >= 3}
 
-    # --- body temperature / fever ---
+    # --- body temperature / fever (prefer latest patient-reported value) ---
+    canon_q = q
     if qwords & {"temperature", "temp", "fever", "febbr", "febvere"} or (
-        "body" in q and "temperature" in q
+        "body" in canon_q and "temperature" in canon_q
     ):
-        readings: list[tuple[str, str]] = []
-        seen_vals: set[str] = set()
+        patient_temps: list[tuple[str, str, str]] = []
+        summary_temps: list[tuple[str, str, str]] = []
+
         for c in chunks[:8]:
+            created = (c.get("created_at") or "")[:19]
             content = (c.get("content") or "")
             for line in content.splitlines():
                 line_s = line.strip()
@@ -915,6 +1014,7 @@ def _fascicolo_direct_answer(query: str, chunks: list[dict]) -> str | None:
                 for pat in (
                     r"my body temperature is\s+(\d{2}(?:\.\d)?)",
                     r"body temperature(?:\s+is)?\s+(?:of\s+)?(\d{2}(?:\.\d)?)\s*°?\s*c",
+                    r"febbre\s+(?:a\s+)?(\d{2}(?:\.\d)?)",
                     r"(?:bt|temp(?:erature)?)\s*[:=]?\s*(\d{2}(?:\.\d)?)\s*°?\s*c",
                     r"(\d{2}(?:\.\d)?)\s*°c",
                 ):
@@ -926,22 +1026,37 @@ def _fascicolo_direct_answer(query: str, chunks: list[dict]) -> str | None:
                             continue
                         if v < 34 or v > 45:
                             continue
-                        label = (
-                            "patient message"
-                            if is_patient_line
-                            else ("clinical summary" if is_summary else "record")
-                        )
                         disp = f"{raw}°C"
-                        if disp not in seen_vals:
-                            seen_vals.add(disp)
-                            readings.append((disp, label))
+                        excerpt = re.sub(
+                            r"^\[(?:paziente|user)\]\s*|^Messaggio:\s*",
+                            "",
+                            line_s,
+                            flags=re.I,
+                        ).strip()[:120]
+                        row = (created, disp, excerpt)
+                        if is_patient_line:
+                            patient_temps.append(row)
+                        elif is_summary:
+                            summary_temps.append(row)
 
-        if readings:
-            parts = [f"{val} ({src})" for val, src in readings[:4]]
+        patient_temps.sort(key=lambda x: x[0], reverse=True)
+        summary_temps.sort(key=lambda x: x[0], reverse=True)
+
+        if patient_temps:
+            _ts, disp, excerpt = patient_temps[0]
+            answer = (
+                f"The most recent body temperature reported by the patient "
+                f"is {disp}."
+            )
+            if excerpt and len(excerpt) > 8:
+                answer += f' Context: "{excerpt}".'
+            return answer
+
+        if summary_temps:
+            _ts, disp, _ex = summary_temps[0]
             return (
-                "Body temperature documented in the record: "
-                + "; ".join(parts)
-                + "."
+                f"The latest body temperature noted in the clinical summary "
+                f"is {disp}."
             )
 
     # --- generic: best matching patient line ---
@@ -1178,6 +1293,13 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             "sources": [],
         }
 
+    search_q = _fascicolo_canonicalize_query(cleaned)
+    if search_q != cleaned:
+        print(
+            f"[agent] fascicolo: query normalized {cleaned!r} -> {search_q!r}",
+            flush=True,
+        )
+
     indexed_total = _count_anamnesi_chunks(paziente_id)
     if indexed_total == 0:
         print(
@@ -1195,13 +1317,15 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
 
     chunks = retrieve_relevant_chunks(
         paziente_id,
-        cleaned,
+        search_q,
         top_k=FASCICOLO_TOP_K,
         min_similarity=FASCICOLO_MIN_SIMILARITY,
         min_query_chars=FASCICOLO_MIN_QUERY_CHARS,
     )
     if not chunks and indexed_total > 0:
-        chunks = _keyword_fallback_chunks(paziente_id, cleaned, top_k=FASCICOLO_TOP_K)
+        chunks = _keyword_fallback_chunks(
+            paziente_id, search_q, top_k=FASCICOLO_TOP_K
+        )
         if chunks:
             print(
                 f"[agent] fascicolo: keyword fallback -> {len(chunks)} chunk.",
@@ -1231,18 +1355,20 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             "sources": [],
         }
 
-    sources = [
-        {
-            "source_type": c.get("source_type"),
-            "source_id": c.get("source_id"),
-            "similarity": round(float(c.get("similarity") or 0.0), 3),
-            "created_at": c.get("created_at"),
-            "content": c.get("content"),
-        }
-        for c in chunks
-    ]
+    sources = _dedupe_fascicolo_sources(
+        [
+            {
+                "source_type": c.get("source_type"),
+                "source_id": c.get("source_id"),
+                "similarity": round(float(c.get("similarity") or 0.0), 3),
+                "created_at": c.get("created_at"),
+                "content": (c.get("content") or "")[:400] or None,
+            }
+            for c in chunks
+        ]
+    )
 
-    direct = _fascicolo_compose_record_answer(cleaned, chunks)
+    direct = _fascicolo_compose_record_answer(search_q, chunks)
     if direct:
         print("[agent] fascicolo: composed answer (no LLM).", flush=True)
         return {"answer": direct, "sources": sources}
@@ -1259,7 +1385,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         SystemMessage(content=FASCICOLO_QA_SYSTEM_PROMPT),
         HumanMessage(
             content=(
-                f"Doctor's question:\n{cleaned}\n\n"
+                f"Doctor's question:\n{search_q}\n\n"
                 f"Excerpts from the patient's record:\n{context_block}"
             )
         ),
@@ -1271,10 +1397,10 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             "(web service Render, non il worker). Uso estratti senza LLM.",
             flush=True,
         )
-        direct = _fascicolo_compose_record_answer(cleaned, chunks)
+        direct = _fascicolo_compose_record_answer(search_q, chunks)
         if direct:
             return {"answer": direct, "sources": sources}
-        answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=False)
+        answer = _fascicolo_excerpt_fallback(chunks, search_q, llm_failed=False)
         return {"answer": answer, "sources": sources}
 
     answer = ""
@@ -1288,16 +1414,16 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         traceback.print_exc()
 
     if not answer:
-        answer = _generate_fascicolo_answer_minimal(cleaned, chunks)
+        answer = _generate_fascicolo_answer_minimal(search_q, chunks)
         if answer:
             print("[agent] fascicolo: risposta da minimal LLM.", flush=True)
 
     if not answer:
-        direct = _fascicolo_compose_record_answer(cleaned, chunks)
+        direct = _fascicolo_compose_record_answer(search_q, chunks)
         if direct:
             answer = direct
         else:
-            answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=True)
+            answer = _fascicolo_excerpt_fallback(chunks, search_q, llm_failed=True)
 
     return {"answer": answer, "sources": sources}
 

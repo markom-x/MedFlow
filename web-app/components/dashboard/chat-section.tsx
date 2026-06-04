@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Paperclip, Send, X } from "lucide-react";
+import { FileText, Loader2, Paperclip, Send, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -324,16 +324,31 @@ export function ChatSection({
                     ) : null}
                   </>
                 ) : isPdf && u ? (
-                  <>
-                    {!isAllegatoMultimedialePlaceholder(text) ? (
-                      <p className="whitespace-pre-wrap text-slate-900">{text}</p>
-                    ) : null}
+                  <div className="rounded-xl border border-amber-200/90 bg-gradient-to-b from-amber-50/90 to-white p-3 ring-1 ring-amber-100/80">
+                    <div className="mb-2 flex items-center gap-2 text-amber-950">
+                      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-amber-100/90">
+                        <FileText
+                          className="size-4 text-amber-800"
+                          aria-hidden
+                        />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800/90">
+                          PDF attachment
+                        </p>
+                        <p className="truncate font-mono text-sm font-medium text-slate-900">
+                          {!isAllegatoMultimedialePlaceholder(text)
+                            ? text
+                            : u.split("/").pop() ?? "Document"}
+                        </p>
+                      </div>
+                    </div>
                     <SignedPatientMedia
                       key={`${messaggio.id}-${u}`}
                       storagePath={u}
                       layout="chat"
                     />
-                  </>
+                  </div>
                 ) : isImageOrReferto && u ? (
                   <>
                     <SignedPatientMedia

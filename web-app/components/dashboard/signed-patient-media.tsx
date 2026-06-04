@@ -75,9 +75,10 @@ export function SignedPatientMedia({ storagePath, layout = "chat" }: Props) {
         href={src}
         target="_blank"
         rel="noopener noreferrer"
-        className="mt-2 inline-flex text-base font-medium text-blue-700 underline underline-offset-2 hover:text-blue-800"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-amber-300/80 bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm transition hover:bg-amber-50"
       >
-        Download / open PDF
+        <FileText className="size-4 shrink-0 text-amber-700" aria-hidden />
+        Open PDF
       </a>
     );
   }
