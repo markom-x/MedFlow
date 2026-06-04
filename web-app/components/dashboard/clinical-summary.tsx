@@ -7,6 +7,7 @@ import {
   latestClinicalSummary,
   latestFinalizedRequest,
 } from "@/lib/dashboard/aggregate";
+import { formatClinicalEntityCategory } from "@/lib/dashboard/clinical-entity-labels";
 import { formatCreatedAt } from "@/lib/dashboard/format";
 import type { RichiestaRow } from "@/lib/dashboard/types";
 
@@ -110,7 +111,7 @@ export function ClinicalSummary({ requests }: Props) {
                         {e.description}
                         {hasText(e.category) ? (
                           <span className="ml-1 text-xs text-slate-500">
-                            ({e.category!.replace(/_/g, " ")})
+                            ({formatClinicalEntityCategory(e.category!)})
                           </span>
                         ) : null}
                       </li>

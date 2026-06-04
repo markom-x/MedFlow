@@ -1158,6 +1158,30 @@ def upload_bytes_to_supabase_bucket(
         return None
 
 
+def upload_first_incoming_media(
+    from_number: str,
+    message_sid: str,
+    incoming_media: list[dict],
+) -> str | None:
+    """
+    Scarica il primo allegato Twilio e lo carica su Storage. Ritorna il path
+    relativo da salvare in `richieste.url_media` (visibile subito in dashboard).
+    """
+    if not incoming_media:
+        return None
+    first = incoming_media[0] or {}
+    url = (first.get("url") or "").strip()
+    if not url:
+        return None
+    file_bytes, dl_ct, dl_cd = download_twilio_media_requests(url)
+    if not file_bytes:
+        return None
+    ct = _normalize_content_type(dl_ct, first.get("content_type") or "")
+    return upload_file_bytes_to_storage(
+        file_bytes, from_number, ct, dl_cd, message_sid
+    )
+
+
 def upload_file_bytes_to_storage(
     file_bytes: bytes,
     from_number: str,
@@ -1568,18 +1592,24 @@ def twilio_webhook(
     # works off `conversazioni`). riassunto_clinico is left empty so the bubble
     # never overrides the AI clinical summary card. Media-only messages are
     # surfaced with a placeholder; the attachment itself is handled by the agent.
+    bridge_media_path: str | None = None
+    if incoming_media:
+        bridge_media_path = upload_first_incoming_media(
+            from_phone, MessageSid or "", incoming_media
+        )
+
     try:
         _bubble_text = (Body or "").strip() or (
             "[Media attachment]" if incoming_media else ""
         )
-        if _bubble_text:
+        if _bubble_text or bridge_media_path:
             insert_richiesta(
                 paziente_id=paziente_id,
                 medico_id=medico_id,
-                messaggio_originale=_bubble_text,
+                messaggio_originale=_bubble_text or "[Media attachment]",
                 riassunto_clinico="",
                 urgenza=None,
-                url_media=None,
+                url_media=bridge_media_path,
             )
     except Exception as e:
         print(

@@ -324,8 +324,8 @@ class ClinicalEntity(BaseModel):
     category: str | None = Field(
         default=None,
         description=(
-            "Tipo dell'entita': es. 'esame_laboratorio', 'patologia_remota', "
-            "'farmaco', 'diagnosi', 'parametro_vitale'."
+            "Entity type (English code): 'lab_test', 'past_condition', "
+            "'medication', 'diagnosis', 'vital_sign'."
         ),
     )
     source_reference: SourceReference | None = Field(
@@ -637,7 +637,16 @@ def retrieve_relevant_chunks(
                 f"[agent] retrieve: retry min_similarity=0 -> {len(chunks)} chunk.",
                 flush=True,
             )
-    return chunks
+    return _filter_fascicolo_chunks(chunks)
+
+
+def _filter_fascicolo_chunks(chunks: list[dict]) -> list[dict]:
+    """Drop legacy bot interview lines that pollute doctor-facing search."""
+    return [
+        c
+        for c in chunks
+        if "[assistant_bot]" not in (c.get("content") or "").lower()
+    ]
 
 
 def _messages_to_openai_chat(messages: list[BaseMessage]) -> list[dict]:
@@ -742,6 +751,59 @@ def _fascicolo_direct_answer(query: str, chunks: list[dict]) -> str | None:
             return f"From the patient's record: {clean}"
 
     return None
+
+
+def _fascicolo_compose_record_answer(query: str, chunks: list[dict]) -> str | None:
+    """
+    Builds a short English answer from patient messages + clinical summaries
+    across all retrieved chunks (no LLM). Used before/alongside GPT synthesis.
+    """
+    if not chunks:
+        return None
+    temp = _fascicolo_direct_answer(query, chunks)
+    if temp:
+        return temp
+
+    qwords = {w for w in re.split(r"\W+", (query or "").lower()) if len(w) >= 3}
+    if not qwords:
+        return None
+
+    patient_quotes: list[str] = []
+    summary_facts: list[str] = []
+
+    for c in chunks[:10]:
+        for line in (c.get("content") or "").splitlines():
+            line_s = line.strip()
+            if not line_s or "[assistant_bot]" in line_s.lower():
+                continue
+            ll = line_s.lower()
+            if "sintesi clinica:" in ll:
+                fact = line_s.split(":", 1)[-1].strip()
+                if fact and any(w in fact.lower() for w in qwords):
+                    if fact not in summary_facts:
+                        summary_facts.append(fact[:300])
+            elif "[paziente]" in ll or (
+                ll.startswith("messaggio:") and "you:" not in ll[:24]
+            ):
+                clean = re.sub(
+                    r"^\[(?:paziente|user)\]\s*|^Messaggio:\s*",
+                    "",
+                    line_s,
+                    flags=re.I,
+                ).strip()
+                if clean and any(w in clean.lower() for w in qwords):
+                    if clean not in patient_quotes:
+                        patient_quotes.append(clean[:300])
+
+    if not patient_quotes and not summary_facts:
+        return None
+
+    parts: list[str] = []
+    if patient_quotes:
+        parts.append(f'The patient reported: "{patient_quotes[0]}"')
+    if summary_facts:
+        parts.append(f"Clinical summary: {summary_facts[0]}")
+    return "Based on the record — " + ". ".join(parts) + "."
 
 
 def _fascicolo_excerpt_fallback(
@@ -951,9 +1013,9 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         for c in chunks
     ]
 
-    direct = _fascicolo_direct_answer(cleaned, chunks)
+    direct = _fascicolo_compose_record_answer(cleaned, chunks)
     if direct:
-        print("[agent] fascicolo: direct answer (no LLM).", flush=True)
+        print("[agent] fascicolo: composed answer (no LLM).", flush=True)
         return {"answer": direct, "sources": sources}
 
     context_parts = []
@@ -980,7 +1042,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             "(web service Render, non il worker). Uso estratti senza LLM.",
             flush=True,
         )
-        direct = _fascicolo_direct_answer(cleaned, chunks)
+        direct = _fascicolo_compose_record_answer(cleaned, chunks)
         if direct:
             return {"answer": direct, "sources": sources}
         answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=False)
@@ -1002,7 +1064,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             print("[agent] fascicolo: risposta da minimal LLM.", flush=True)
 
     if not answer:
-        direct = _fascicolo_direct_answer(cleaned, chunks)
+        direct = _fascicolo_compose_record_answer(cleaned, chunks)
         if direct:
             answer = direct
         else:

@@ -1,7 +1,7 @@
 "use client";
 
 import { Pencil } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { lastMessagePreview } from "@/lib/dashboard/aggregate";
 import type { PatientBucket } from "@/lib/dashboard/aggregate";
@@ -30,6 +30,21 @@ function PatientListItem({
   const preview = lastMessagePreview(requests);
   const [isEditingName, setIsEditingName] = useState(false);
   const [draftName, setDraftName] = useState(profile.nomeRaw ?? "");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function openDetails() {
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current);
+      leaveTimerRef.current = null;
+    }
+    setDetailsOpen(true);
+  }
+
+  function scheduleCloseDetails() {
+    if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    leaveTimerRef.current = setTimeout(() => setDetailsOpen(false), 450);
+  }
 
   useEffect(() => {
     if (!isEditingName) {
@@ -77,35 +92,41 @@ function PatientListItem({
               aria-label="Edit patient name"
             />
           ) : (
-            <div className="group/name relative inline-block max-w-full">
+            <div
+              className="relative inline-block max-w-full"
+              onMouseEnter={openDetails}
+              onMouseLeave={scheduleCloseDetails}
+            >
               <p className="truncate font-semibold text-slate-900 pr-1">
                 {profile.nomeDisplay}
               </p>
-              {/* Hover popover: phone + edit (only when hovering the name) */}
-              <div
-                className={cn(
-                  "pointer-events-none absolute left-0 top-full z-20 mt-1 min-w-[12rem] rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-lg",
-                  "opacity-0 transition-opacity duration-150",
-                  "group-hover/name:opacity-100 group-focus-within/name:opacity-100"
-                )}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <p className="font-mono text-xs text-slate-600">
-                  {profile.telefono}
-                </p>
-                <button
-                  type="button"
-                  className="pointer-events-auto mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-blue-700"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsEditingName(true);
-                  }}
-                  aria-label="Edit patient name"
+              {detailsOpen ? (
+                <div
+                  className="absolute left-0 top-full z-30 pt-2"
+                  onMouseEnter={openDetails}
+                  onMouseLeave={scheduleCloseDetails}
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  <Pencil className="size-3.5" />
-                  Edit name
-                </button>
-              </div>
+                  <div className="min-w-[12rem] rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-lg">
+                  <p className="font-mono text-xs text-slate-600">
+                    {profile.telefono}
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-blue-700"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDetailsOpen(false);
+                      setIsEditingName(true);
+                    }}
+                    aria-label="Edit patient name"
+                  >
+                    <Pencil className="size-3.5" />
+                    Edit name
+                  </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
           <p className="mt-1 line-clamp-2 text-sm leading-snug text-slate-600">
