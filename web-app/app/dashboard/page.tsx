@@ -43,16 +43,13 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-slate-50">
-      {/* Always-present toggle: a small arrow sits in the top-left corner,
-          overlaid on top of the content so it steals no layout space. Clicking
-          it drops the full header down as an overlay; clicking again (or the
-          backdrop / Escape) hides it. */}
+      {/* Always-present toggle: small arrow top-right, overlaid (no layout space). */}
       <button
         type="button"
         onClick={() => setIsHeaderOpen((open) => !open)}
         aria-label={isHeaderOpen ? "Hide menu" : "Show menu"}
         aria-expanded={isHeaderOpen}
-        className="absolute left-2 top-2 z-50 inline-flex size-7 items-center justify-center rounded-md bg-white/85 text-slate-500 shadow-sm ring-1 ring-slate-200 backdrop-blur transition hover:bg-white hover:text-slate-900"
+        className="absolute right-2 top-2 z-50 inline-flex size-7 items-center justify-center rounded-md bg-white/85 text-slate-500 shadow-sm ring-1 ring-slate-200 backdrop-blur transition hover:bg-white hover:text-slate-900"
       >
         <ChevronDown
           className={`size-4 transition-transform duration-200 ${
@@ -72,7 +69,7 @@ export default function DashboardPage() {
       ) : null}
 
       <header
-        className={`absolute inset-x-0 top-0 z-40 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/95 py-3 pl-12 pr-4 shadow-md backdrop-blur transition-all duration-200 md:pr-6 ${
+        className={`absolute inset-x-0 top-0 z-40 flex items-center justify-between gap-4 border-b border-slate-200 bg-white/95 py-3 pl-4 pr-12 shadow-md backdrop-blur transition-all duration-200 md:pl-6 ${
           isHeaderOpen
             ? "translate-y-0 opacity-100"
             : "pointer-events-none -translate-y-full opacity-0"
