@@ -1,11 +1,9 @@
 "use server";
 
-import { redirect } from "next/navigation";
-
 import { getSupabaseAuthServerClient } from "@/lib/supabase/auth-server";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase/server";
 
-export type SignInResult = { ok: false; error: string } | void;
+export type SignInResult = { ok: true } | { ok: false; error: string };
 
 const DEFAULT_DEMO_EMAIL = "founder@medflow.demo";
 
@@ -129,5 +127,5 @@ export async function signInWithDemo(
     return { ok: false, error: `Sign-in failed: ${error.message}` };
   }
 
-  redirect("/dashboard");
+  return { ok: true };
 }

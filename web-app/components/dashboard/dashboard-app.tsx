@@ -62,6 +62,15 @@ export function DashboardApp() {
     void load();
   }, [load]);
 
+  // WhatsApp inserts bypass browser RLS/realtime; poll so new patient messages
+  // show up without a manual page reload.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void load({ silent: true });
+    }, 4000);
+    return () => window.clearInterval(interval);
+  }, [load]);
+
   const selectedBucket = useMemo(() => {
     if (selectedId == null) return null;
     return buckets.get(selectedId) ?? null;

@@ -1616,6 +1616,19 @@ class FascicoloQueryRequest(BaseModel):
     query: str
 
 
+@app.get("/api/fascicolo/health")
+def fascicolo_health() -> dict:
+    """Diagnostica rapida per la query fascicolo (dashboard → questo servizio)."""
+    import agent
+
+    return {
+        "openai_configured": bool(openai_client),
+        "supabase_configured": bool(supabase),
+        "chat_model": agent.CHAT_MODEL,
+        "embedding_model": agent.EMBEDDING_MODEL,
+    }
+
+
 @app.post("/api/fascicolo/query")
 def fascicolo_query(
     req: FascicoloQueryRequest,

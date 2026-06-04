@@ -622,9 +622,50 @@ def retrieve_relevant_chunks(
     return chunks
 
 
+def _messages_to_openai_chat(messages: list[BaseMessage]) -> list[dict]:
+    out: list[dict] = []
+    for m in messages:
+        if isinstance(m, SystemMessage):
+            out.append({"role": "system", "content": str(m.content)})
+        elif isinstance(m, HumanMessage):
+            out.append({"role": "user", "content": str(m.content)})
+        elif isinstance(m, AIMessage):
+            out.append({"role": "assistant", "content": str(m.content)})
+    return out
+
+
+def _fascicolo_excerpt_fallback(chunks: list[dict], query: str) -> str:
+    """Risposta senza LLM: estratti pertinenti (se OpenAI non e' disponibile)."""
+    lines = [
+        "I could not run the AI summarizer on the web service. "
+        "Here are the most relevant excerpts from the record for your question:",
+        f'"{query}"',
+        "",
+    ]
+    for i, c in enumerate(chunks[:5], start=1):
+        st = c.get("source_type") or "source"
+        content = (c.get("content") or "").strip()
+        if content:
+            lines.append(f"**Excerpt {i}** ({st}):\n{content}\n")
+    return "\n".join(lines).strip()
+
+
 def _generate_fascicolo_answer(messages: list[BaseMessage]) -> str:
-    """Wrapper isolato (testabile) per la risposta in linguaggio naturale sul
-    fascicolo. Output testo libero, non structured output."""
+    """Risposta in linguaggio naturale sul fascicolo.
+
+    Usa `openai_client` da main.py (stesso path della sintesi legacy) per
+    evitare problemi LangChain sul web service Render. Fallback su ChatOpenAI.
+    """
+    if openai_client:
+        resp = openai_client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=_messages_to_openai_chat(messages),
+            temperature=0,
+            timeout=60,
+        )
+        text = resp.choices[0].message.content or ""
+        return text.strip()
+
     llm = _get_chat_llm(temperature=0.0)
     resp = llm.invoke(messages)
     text = getattr(resp, "content", "")
@@ -722,22 +763,37 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         ),
     ]
 
+    if not openai_client:
+        print(
+            "[agent] fascicolo: OPENAI_API_KEY assente su QUESTO servizio "
+            "(web service Render, non il worker). Uso estratti senza LLM.",
+            flush=True,
+        )
+        answer = _fascicolo_excerpt_fallback(chunks, cleaned)
+        sources = [
+            {
+                "source_type": c.get("source_type"),
+                "source_id": c.get("source_id"),
+                "similarity": round(float(c.get("similarity") or 0.0), 3),
+                "created_at": c.get("created_at"),
+                "content": c.get("content"),
+            }
+            for c in chunks
+        ]
+        return {"answer": answer, "sources": sources}
+
     try:
         answer = _generate_fascicolo_answer(messages)
     except Exception as e:
         print(
-            f"[agent] ERRORE answer_fascicolo_query: {type(e).__name__}: {e}",
+            f"[agent] ERRORE answer_fascicolo_query LLM: {type(e).__name__}: {e}",
             flush=True,
         )
         traceback.print_exc()
-        return {
-            "answer": "Technical error while querying the record. Please try again.",
-            "sources": [],
-            "error": type(e).__name__,
-        }
+        answer = _fascicolo_excerpt_fallback(chunks, cleaned)
 
     if not answer:
-        answer = "I could not produce an answer from the record."
+        answer = _fascicolo_excerpt_fallback(chunks, cleaned)
 
     sources = [
         {

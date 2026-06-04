@@ -1,13 +1,14 @@
 "use client";
 
 import { Loader2, Lock, Mail, Stethoscope } from "lucide-react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useState } from "react";
 import { toast } from "sonner";
 
 import { signInWithDemo } from "@/lib/actions/demo";
 
 function LoginForm() {
+  const router = useRouter();
   const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -26,11 +27,16 @@ function LoginForm() {
     try {
       setSending(true);
       const res = await signInWithDemo(email, password);
-      if (res && res.ok === false) {
+      if (res.ok === false) {
         toast.error(res.error);
+        return;
       }
-    } catch {
-      toast.error("Sign-in failed. Please try again.");
+      router.push("/dashboard");
+      router.refresh();
+    } catch (e) {
+      toast.error(
+        e instanceof Error ? e.message : "Sign-in failed. Please try again."
+      );
     } finally {
       setSending(false);
     }

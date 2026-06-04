@@ -58,6 +58,7 @@ export async function queryFascicolo(
       },
       body: JSON.stringify({ paziente_id: pazienteId, query: q }),
       cache: "no-store",
+      signal: AbortSignal.timeout(90_000),
     });
 
     if (!res.ok) {
