@@ -9,6 +9,7 @@ import {
   queryFascicolo,
   type FascicoloSource,
 } from "@/lib/actions/fascicolo";
+import { FascicoloAnswerDisplay } from "@/lib/dashboard/fascicolo-answer-display";
 
 type Props = {
   pazienteId: string;
@@ -124,16 +125,17 @@ export function FascicoloQuery({ pazienteId }: Props) {
       </div>
 
       {answer ? (
-        <div className="mt-5 rounded-lg border border-blue-100 bg-blue-50/60 p-4">
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
-            {answer}
-          </p>
+        <div className="mt-5 rounded-lg border border-blue-100 bg-blue-50/50 p-4">
+          <FascicoloAnswerDisplay answer={answer} />
           {sources.length > 0 ? (
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div
+              className="mt-3 flex flex-wrap gap-1.5 border-t border-blue-100/80 pt-3"
+              aria-label="Sources"
+            >
               {sources.map((s, i) => (
                 <span
                   key={`${s.source_id ?? "src"}-${i}`}
-                  className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs font-medium text-slate-600"
+                  className="inline-flex items-center rounded-full border border-violet-200/90 bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-800 shadow-sm"
                   title={s.content ?? undefined}
                 >
                   {formatSourceLabel(s)}
