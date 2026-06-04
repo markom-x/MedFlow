@@ -1636,6 +1636,7 @@ def fascicolo_health() -> dict:
         "openai_configured": bool(openai_client),
         "supabase_configured": bool(supabase),
         "chat_model": agent.CHAT_MODEL,
+        "fascicolo_chat_model": agent.FASCICOLO_CHAT_MODEL,
         "embedding_model": agent.EMBEDDING_MODEL,
     }
 

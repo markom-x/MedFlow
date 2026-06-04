@@ -1028,6 +1028,9 @@ def test_answer_fascicolo_query_llm_error_is_safe(
         "_generate_fascicolo_answer",
         MagicMock(side_effect=RuntimeError("LLM down")),
     )
+    monkeypatch.setattr(
+        agent, "_generate_fascicolo_answer_minimal", MagicMock(return_value="")
+    )
 
     monkeypatch.setattr(agent, "_count_anamnesi_chunks", MagicMock(return_value=1))
     monkeypatch.setattr(agent, "_resolve_openai_client", lambda: MagicMock())
@@ -1035,6 +1038,7 @@ def test_answer_fascicolo_query_llm_error_is_safe(
     out = agent.answer_fascicolo_query(PAZIENTE_ID, "una domanda abbastanza lunga")
     assert len(out["sources"]) == 1
     assert "Emoglobina 12.4" in out["answer"]
+    assert "excerpt" in out["answer"].lower() or "relevant" in out["answer"].lower()
 
 
 # --------------------------- backfill_fascicolo ---------------------------

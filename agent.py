@@ -134,6 +134,11 @@ FASCICOLO_MIN_SIMILARITY = float(os.getenv("MEDFLOW_FASCICOLO_MIN_SIMILARITY", "
 # (RAG_MIN_QUERY_CHARS=8, pensato per scartare "ok"/"si" nei turni paziente).
 # Qui una parola singola e mirata ("febbre", "allergie", "hb") e' legittima.
 FASCICOLO_MIN_QUERY_CHARS = int(os.getenv("MEDFLOW_FASCICOLO_MIN_QUERY_CHARS", "2"))
+# Fascicolo QA: modello leggero e contesto limitato (meno timeout su Render).
+FASCICOLO_CHAT_MODEL = os.getenv("MEDFLOW_FASCICOLO_CHAT_MODEL", "gpt-4o-mini")
+FASCICOLO_MAX_CONTEXT_CHARS = int(
+    os.getenv("MEDFLOW_FASCICOLO_MAX_CONTEXT_CHARS", "12000")
+)
 
 ANAMNESIS_SYSTEM_PROMPT = """You are a medical assistant conducting a pre-visit intake on
 behalf of a General Practitioner. You speak to the patient over WhatsApp in English, in an
@@ -666,31 +671,111 @@ def _fascicolo_excerpt_fallback(
     return "\n".join(lines).strip()
 
 
-def _generate_fascicolo_answer(messages: list[BaseMessage]) -> str:
-    """Risposta in linguaggio naturale sul fascicolo.
+def _truncate_fascicolo_context(context_block: str) -> str:
+    if len(context_block) <= FASCICOLO_MAX_CONTEXT_CHARS:
+        return context_block
+    return (
+        context_block[:FASCICOLO_MAX_CONTEXT_CHARS]
+        + "\n\n[... additional excerpts omitted for length ...]"
+    )
 
-    Usa `openai_client` da main.py (stesso path della sintesi legacy) per
-    evitare problemi LangChain sul web service Render. Fallback su ChatOpenAI.
-    """
+
+def _openai_chat_text(
+    client,
+    *,
+    model: str,
+    messages: list[dict],
+    max_tokens: int = 600,
+) -> str:
+    """Chat completion via OpenAI SDK (no LangChain)."""
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0,
+        max_tokens=max_tokens,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _generate_fascicolo_answer_minimal(query: str, chunks: list[dict]) -> str:
+    """Second-chance answer: 1–2 best chunks only, gpt-4o-mini, short output."""
     client = _resolve_openai_client()
-    if client:
-        resp = client.chat.completions.create(
-            model=CHAT_MODEL,
-            messages=_messages_to_openai_chat(messages),
-            temperature=0,
-            timeout=60,
+    if not client or not chunks:
+        return ""
+    parts = []
+    for c in chunks[:2]:
+        content = (c.get("content") or "").strip()
+        if content:
+            parts.append(content[:2500])
+    if not parts:
+        return ""
+    excerpt = "\n---\n".join(parts)
+    try:
+        return _openai_chat_text(
+            client,
+            model="gpt-4o-mini",
+            max_tokens=250,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You answer a doctor's question using ONLY the patient "
+                        "excerpt below. English, 1-3 sentences. If the excerpt "
+                        "does not contain the answer, say it is not in the record."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Question: {query}\n\nExcerpt:\n{excerpt}",
+                },
+            ],
         )
-        text = resp.choices[0].message.content or ""
-        return text.strip()
+    except Exception as e:
+        print(
+            f"[agent] fascicolo minimal LLM fail: {type(e).__name__}: {e}",
+            flush=True,
+        )
+        return ""
 
-    llm = _get_chat_llm(temperature=0.0)
-    resp = llm.invoke(messages)
-    text = getattr(resp, "content", "")
-    if isinstance(text, list):
-        text = " ".join(
-            part.get("text", "") for part in text if isinstance(part, dict)
-        )
-    return (text or "").strip()
+
+def _generate_fascicolo_answer(messages: list[BaseMessage]) -> str:
+    """Risposta in linguaggio naturale sul fascicolo (OpenAI SDK, multi-model retry)."""
+    client = _resolve_openai_client()
+    if not client:
+        llm = _get_chat_llm(temperature=0.0)
+        resp = llm.invoke(messages)
+        text = getattr(resp, "content", "")
+        if isinstance(text, list):
+            text = " ".join(
+                part.get("text", "") for part in text if isinstance(part, dict)
+            )
+        return (text or "").strip()
+
+    oai_messages = _messages_to_openai_chat(messages)
+    models: list[str] = []
+    for m in (FASCICOLO_CHAT_MODEL, CHAT_MODEL, "gpt-4o-mini"):
+        if m and m not in models:
+            models.append(m)
+
+    last_err: Exception | None = None
+    for model in models:
+        try:
+            text = _openai_chat_text(
+                client, model=model, messages=oai_messages, max_tokens=600
+            )
+            if text:
+                print(f"[agent] fascicolo LLM ok (model={model})", flush=True)
+                return text
+        except Exception as e:
+            last_err = e
+            print(
+                f"[agent] fascicolo LLM fail model={model}: "
+                f"{type(e).__name__}: {e}",
+                flush=True,
+            )
+    if last_err:
+        raise last_err
+    return ""
 
 
 def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
@@ -768,7 +853,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         ts = c.get("created_at") or ""
         content = c.get("content") or ""
         context_parts.append(f"[Source {i} | {st} | {ts}]\n{content}")
-    context_block = "\n\n".join(context_parts)
+    context_block = _truncate_fascicolo_context("\n\n".join(context_parts))
 
     messages: list[BaseMessage] = [
         SystemMessage(content=FASCICOLO_QA_SYSTEM_PROMPT),
@@ -799,6 +884,7 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
         ]
         return {"answer": answer, "sources": sources}
 
+    answer = ""
     try:
         answer = _generate_fascicolo_answer(messages)
     except Exception as e:
@@ -807,7 +893,11 @@ def answer_fascicolo_query(paziente_id: str, query: str) -> dict:
             flush=True,
         )
         traceback.print_exc()
-        answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=True)
+
+    if not answer:
+        answer = _generate_fascicolo_answer_minimal(cleaned, chunks)
+        if answer:
+            print("[agent] fascicolo: risposta da minimal LLM.", flush=True)
 
     if not answer:
         answer = _fascicolo_excerpt_fallback(chunks, cleaned, llm_failed=True)
